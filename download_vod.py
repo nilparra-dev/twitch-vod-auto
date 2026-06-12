@@ -5,6 +5,7 @@ import json
 import time
 import logging
 import platform
+import shlex
 from pathlib import Path
 from tqdm import tqdm
 from retry import retry_with_backoff
@@ -14,9 +15,43 @@ from progress import DownloadProgress
 
 log = logging.getLogger("download")
 
-def download_vod_auto(vod_id: str, config: dict, output_filename: str = None, notifier=None, tracker_url: str = None):
+def _channel_twitch_config(config: dict, channel: str = None) -> dict:
+    twitch_cfg = config.get("twitch", {})
+    merged = dict(twitch_cfg.get("global", {}))
+    if channel:
+        for ch in twitch_cfg.get("channels", []):
+            if ch.get("name", "").lower() == channel.lower():
+                for key in ("cookies_file", "cookies_browser"):
+                    if ch.get(key) is not None:
+                        merged[key] = ch.get(key)
+                break
+    return merged
+
+
+def _video_url(video_id: str) -> str:
+    return f"https://www.twitch.tv/videos/{video_id}"
+
+
+def _video_id_from_internal_vod_id(vod_id: str) -> str:
+    if not vod_id.startswith("video:"):
+        return ""
+    body = vod_id.replace("video:", "", 1)
+    parts = body.rsplit("_", 2)
+    return parts[1] if len(parts) == 3 else ""
+
+
+def download_vod_auto(
+    vod_id: str,
+    config: dict,
+    output_filename: str = None,
+    notifier=None,
+    tracker_url: str = None,
+    download_url: str = None,
+    channel: str = None,
+    video_id: str = None,
+):
     download_cfg = config["download"]
-    twitch_cfg = config["twitch"]
+    twitch_cfg = _channel_twitch_config(config, channel)
     
     save_path = download_cfg.get("output_folder", "./downloads")
     os.makedirs(save_path, exist_ok=True)
@@ -38,18 +73,24 @@ def download_vod_auto(vod_id: str, config: dict, output_filename: str = None, no
     
     # Opciones de autenticacion
     auth_args = []
-    if twitch_cfg.get("cookies_file") and os.path.exists(twitch_cfg["cookies_file"]):
-        auth_args = ["--cookies", twitch_cfg["cookies_file"]]
+    cookies_file = twitch_cfg.get("cookies_file")
+    if cookies_file and os.path.exists(cookies_file):
+        auth_args = ["--cookies", cookies_file]
+        log.info("[Download] Usando cookies_file: %s", cookies_file)
     elif twitch_cfg.get("cookies_browser"):
         auth_args = ["--cookies-from-browser", twitch_cfg["cookies_browser"]]
+        log.info("[Download] Usando cookies_browser: %s", twitch_cfg["cookies_browser"])
     
     # Método nuevo: si tenemos tracker_url, usarla directamente (mejor para VODs privados)
     # Según twitch-dlp docs: npx twitch-dlp https://twitchtracker.com/CHANNEL/streams/VIDEO_ID
     if tracker_url:
         log.info("[Download] Usando tracker URL para VOD privado: %s", tracker_url)
         target = tracker_url
+    elif download_url:
+        target = download_url
     else:
-        target = vod_id
+        resolved_video_id = video_id or _video_id_from_internal_vod_id(vod_id)
+        target = _video_url(resolved_video_id) if resolved_video_id else vod_id
     
     use_npx = download_cfg.get("use_npx", True)
     git_bash = download_cfg.get("git_bash_path")
@@ -57,11 +98,11 @@ def download_vod_auto(vod_id: str, config: dict, output_filename: str = None, no
     
     if use_npx and git_bash and is_windows:
         # Modo Windows con Git Bash (original)
-        cookie_part = ""
-        if auth_args:
-            cookie_part = " ".join(auth_args)
-        
-        bash_cmd = f'export PATH=$PATH:"{ffmpeg_folder}" && npx twitch-dlp "{target}" -o "{output_file}" {cookie_part}'
+        cookie_part = " ".join(shlex.quote(a) for a in auth_args)
+        bash_cmd = (
+            f'export PATH=$PATH:{shlex.quote(ffmpeg_folder)} && '
+            f'npx twitch-dlp {shlex.quote(target)} -o {shlex.quote(output_file)} {cookie_part}'
+        )
         
         log.info("[Download] Descargando VOD: %s", vod_id)
         log.info("[Download] Destino: %s", output_file)
@@ -95,7 +136,7 @@ def download_vod_auto(vod_id: str, config: dict, output_filename: str = None, no
         env["PATH"] = ffmpeg_folder + os.pathsep + env["PATH"]
         
         log.info("[Download] Descargando VOD: %s", vod_id)
-        log.info("[Download] Comando: %s", " ".join(cmd))
+        log.info("[Download] Target: %s", target)
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -105,7 +146,7 @@ def download_vod_auto(vod_id: str, config: dict, output_filename: str = None, no
         )
     
     # Inicializar progreso
-    DownloadProgress.start(vod_id, channel="", video_id="")
+    DownloadProgress.start(vod_id, channel=channel or "", video_id=video_id or "")
 
     # Progreso
     progress_pattern = re.compile(r"(\d{1,3}\.\d)%")
@@ -226,9 +267,27 @@ def download_vod_auto(vod_id: str, config: dict, output_filename: str = None, no
         return None
 
 @retry_with_backoff(max_retries=3, base_delay=5.0, max_delay=120.0)
-def download_vod_with_retry(vod_id: str, config: dict, output_filename: str = None, notifier=None, tracker_url: str = None):
+def download_vod_with_retry(
+    vod_id: str,
+    config: dict,
+    output_filename: str = None,
+    notifier=None,
+    tracker_url: str = None,
+    download_url: str = None,
+    channel: str = None,
+    video_id: str = None,
+):
     """Wrapper con retry exponencial + notificaciones opcionales."""
-    result = download_vod_auto(vod_id, config, output_filename, notifier, tracker_url=tracker_url)
+    result = download_vod_auto(
+        vod_id,
+        config,
+        output_filename,
+        notifier,
+        tracker_url=tracker_url,
+        download_url=download_url,
+        channel=channel,
+        video_id=video_id,
+    )
     if not result:
         raise RuntimeError("Descarga fallida (sin archivo)")
     return result

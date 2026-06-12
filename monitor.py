@@ -112,7 +112,8 @@ class VodMonitor:
                 "source": "twitchtracker",
                 "start_time": start_timestamp,
                 "channel": channel,
-                "tracker_url": tracker_url
+                "tracker_url": tracker_url,
+                "download_url": f"https://www.twitch.tv/videos/{video_id}",
             })
 
         log.info("[TT] %s -> %d streams", channel, len(streams))
@@ -153,7 +154,8 @@ class VodMonitor:
                 "source": "streamscharts",
                 "start_time": start_timestamp,
                 "channel": channel,
-                "tracker_url": tracker_url
+                "tracker_url": tracker_url,
+                "download_url": f"https://www.twitch.tv/videos/{video_id}",
             })
 
         seen = {}
@@ -200,7 +202,8 @@ class VodMonitor:
                     "video_id": v["video_id"],
                     "source": "twitch_api",
                     "start_time": v["start_time"],
-                    "channel": channel
+                    "channel": channel,
+                    "download_url": v.get("url") or f"https://www.twitch.tv/videos/{v['video_id']}",
                 })
             log.info("[TwitchAPI] %s -> %d streams", channel, len(results))
             return results
@@ -237,7 +240,14 @@ class VodMonitor:
         for s in by_id.values():
             if not self.db.is_processed(s["vod_id"]):
                 new_streams.append(s)
-                self.db.add_vod(s["vod_id"], s["channel"], s["video_id"], s["source"])
+                self.db.add_vod(
+                    s["vod_id"],
+                    s["channel"],
+                    s["video_id"],
+                    s["source"],
+                    tracker_url=s.get("tracker_url"),
+                    download_url=s.get("download_url"),
+                )
                 self.db.increment_stat(s["channel"], "detected")
 
         log.info("[Monitor] %s: %d total, %d nuevos", channel, len(by_id), len(new_streams))

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   pipeline:
     build: .
@@ -30,8 +28,14 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config.json:/app/config.json:ro
+      - ./.env:/app/.env:ro
     environment:
       - CONFIG_PATH=/app/config.json
       - PYTHONUNBUFFERED=1
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-dev-admin-password}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-me}
+      - COOKIE_SECURE=false
+      - ALLOW_RANDOM_ADMIN_PASSWORD=true
     depends_on:
       - pipeline

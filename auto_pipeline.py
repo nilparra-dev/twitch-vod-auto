@@ -9,7 +9,6 @@ import traceback
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 from db import PipelineDB
 from monitor import VodMonitor
@@ -42,8 +41,6 @@ class AutoPipeline:
         self.download_queue = queue.Queue()
         self.upload_queue = queue.Queue()
         self.running = True
-        self._current_vod_id = None
-
         # Config de canales
         self.channel_cfgs = {ch["name"].lower(): ch for ch in self.config["twitch"]["channels"]}
 
@@ -70,6 +67,27 @@ class AutoPipeline:
             global_yt[k] = v
         return global_yt
 
+    def _parse_source_meta(self, source):
+        if not source or not isinstance(source, str):
+            return {}
+        try:
+            data = json.loads(source)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def _apply_manual_overrides(self, yt_cfg: dict, source_meta: dict) -> dict:
+        if source_meta.get("type") != "manual_upload":
+            return yt_cfg
+        merged = yt_cfg.copy()
+        if source_meta.get("privacy"):
+            merged["privacy_status"] = source_meta["privacy"]
+        if isinstance(source_meta.get("tags"), list) and source_meta["tags"]:
+            merged["tags"] = source_meta["tags"]
+        if source_meta.get("custom_title"):
+            merged["custom_title"] = source_meta["custom_title"]
+        return merged
+
     def _safe_stream_date(self, start_time):
         try:
             if not start_time or start_time <= 0 or start_time > 9_999_999_999:
@@ -79,10 +97,13 @@ class AutoPipeline:
             return datetime.now(timezone.utc)
 
     def _generate_title(self, stream_info: dict, yt_cfg: dict) -> str:
+        if yt_cfg.get("custom_title"):
+            return yt_cfg["custom_title"][:100]
         channel = stream_info["channel"]
         dt = self._safe_stream_date(stream_info.get("start_time", 0))
         date_str = f"{dt.day}/{dt.month}/{dt.year}"
-        title = f"{channel} twitch vod - {date_str}"
+        prefix = yt_cfg.get("prefix_title") or yt_cfg.get("default_prefix_title") or ""
+        title = f"{prefix} {channel} twitch vod - {date_str}".strip()
         return title[:100]
 
     def _generate_description(self, stream_info: dict) -> str:
@@ -95,7 +116,7 @@ class AutoPipeline:
             f"Subido automáticamente por twitch-vod-auto."
         )
 
-    def _reencode_for_youtube(self, file_path: str) -> str:
+    def _reencode_for_youtube(self, file_path: str, vod_id: str) -> str:
         """Reencode el archivo a h264/aac + faststart para que YouTube lo procese siempre.
         Devuelve la ruta al nuevo archivo o None si falla (en cuyo caso se usa el original)."""
         try:
@@ -120,6 +141,7 @@ class AutoPipeline:
             ]
 
             log.info("[Reencode] Iniciando: %s -> %s", src.name, tmp.name)
+            DownloadProgress.update(vod_id, status="encoding", percent=100.0)
             start = time.time()
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
@@ -153,7 +175,7 @@ class AutoPipeline:
                 new_size = src.stat().st_size / 1024 / 1024
                 log.info("[Reencode] OK: %s -> %.1f MB en %ds", src.name, new_size, elapsed)
                 DownloadProgress.update(
-                    self._current_vod_id or "", percent=100.0,
+                    vod_id, percent=100.0,
                     file_size_mb=new_size, elapsed_seconds=elapsed,
                 )
                 return str(src)
@@ -179,7 +201,8 @@ class AutoPipeline:
             video_id = item["video_id"]
             source = item.get("source", "unknown")
             start_time = item.get("start_time", 0)
-            self._current_vod_id = vod_id
+            tracker_url = item.get("tracker_url")
+            download_url = item.get("download_url")
 
             log.info("[DownloadWorker] Iniciando descarga: %s", vod_id)
             self.db.update_vod_status(vod_id, "downloading")
@@ -188,8 +211,15 @@ class AutoPipeline:
             output_filename = f"{safe_name}.mp4"
 
             try:
-                tracker_url = item.get("tracker_url")
-                file_path = download_vod_with_retry(vod_id, self.config, output_filename=output_filename, tracker_url=tracker_url)
+                file_path = download_vod_with_retry(
+                    vod_id,
+                    self.config,
+                    output_filename=output_filename,
+                    tracker_url=tracker_url,
+                    download_url=download_url,
+                    channel=channel,
+                    video_id=video_id,
+                )
             except Exception as e:
                 err = f"Descarga fallida tras retries: {e}"
                 self.db.update_vod_status(vod_id, "failed", error=err)
@@ -204,14 +234,14 @@ class AutoPipeline:
                 if self.config.get("download", {}).get("reencode_for_youtube", True):
                     log.info("[DownloadWorker] Reencoding para YouTube...")
                     self.db.update_vod_status(vod_id, "encoding")
-                    DownloadProgress.update(vod_id, percent=100.0)
-                    reencoded = self._reencode_for_youtube(file_path)
+                    reencoded = self._reencode_for_youtube(file_path, vod_id)
                     if reencoded:
                         file_path = reencoded
 
                 size_mb = get_file_size_mb(file_path)
+                DownloadProgress.complete(vod_id, file_size_mb=size_mb)
                 self.db.update_vod_status(vod_id, "downloaded", file_path=file_path, file_size_mb=size_mb)
-                self.db.mark_queue_status(vod_id, "completed")
+                self.db.mark_queue_status(vod_id, "downloaded")
                 self.upload_queue.put({
                     "vod_id": vod_id,
                     "channel": channel,
@@ -240,6 +270,7 @@ class AutoPipeline:
             vod_id = item["vod_id"]
             channel = item["channel"]
             file_path = item["file_path"]
+            source_meta = self._parse_source_meta(item.get("source"))
             stream_info = {
                 "channel": channel,
                 "video_id": item["video_id"],
@@ -249,9 +280,11 @@ class AutoPipeline:
 
             log.info("[UploadWorker] Iniciando subida: %s", vod_id)
             self.db.update_vod_status(vod_id, "uploading")
+            self.db.mark_queue_status(vod_id, "uploading")
 
+            uploaded = False
             try:
-                yt_cfg = self._get_channel_config(channel)
+                yt_cfg = self._apply_manual_overrides(self._get_channel_config(channel), source_meta)
                 title = self._generate_title(stream_info, yt_cfg)
                 description = self._generate_description(stream_info)
 
@@ -271,21 +304,25 @@ class AutoPipeline:
                 )
 
                 youtube_id = response["id"]
-                size_mb = get_file_size_mb(file_path)
                 self.db.update_vod_status(vod_id, "uploaded", youtube_id=youtube_id)
+                self.db.mark_queue_status(vod_id, "completed")
                 self.db.increment_stat(channel, "uploaded")
+                uploaded = True
                 log.info("[UploadWorker] Subida OK %s -> https://youtu.be/%s", vod_id, youtube_id)
 
             except Exception as e:
                 err = str(e)
-                self.db.update_vod_status(vod_id, "failed", error=err)
+                self.db.update_vod_status(vod_id, "failed", error=err, file_path=file_path)
+                self.db.mark_queue_status(vod_id, "failed", error=err)
                 self.db.increment_stat(channel, "failed")
                 log.error("[UploadWorker] ERROR subiendo %s: %s", vod_id, err)
                 traceback.print_exc()
 
             finally:
-                # Limpieza SIEMPRE (el usuario lo pidio)
-                if os.path.exists(file_path):
+                cleanup_after_upload = self.config.get("download", {}).get("cleanup_after_upload", True)
+                cleanup_failed_uploads = self.config.get("download", {}).get("cleanup_failed_uploads", False)
+                should_cleanup = (uploaded and cleanup_after_upload) or ((not uploaded) and cleanup_failed_uploads)
+                if should_cleanup and os.path.exists(file_path):
                     try:
                         os.remove(file_path)
                         log.info("[UploadWorker] Archivo local eliminado: %s", file_path)
@@ -293,7 +330,7 @@ class AutoPipeline:
                         log.warning("[UploadWorker] No se pudo eliminar %s: %s", file_path, e)
                 # Eliminar thumbnail tambien
                 thumb = str(Path(file_path).with_suffix(".jpg"))
-                if os.path.exists(thumb):
+                if should_cleanup and os.path.exists(thumb):
                     try:
                         os.remove(thumb)
                     except Exception:
@@ -353,6 +390,7 @@ class AutoPipeline:
                     "source": queued.get("source", "manual"),
                     "start_time": queued.get("start_time", 0),
                     "tracker_url": queued.get("tracker_url"),
+                    "download_url": queued.get("download_url"),
                 }
                 self.download_queue.put(item)
                 log.info("[Pipeline] Encolado desde cola manual: %s", item["vod_id"])
@@ -378,8 +416,8 @@ class AutoPipeline:
             log.info("[Pipeline] No hay streams nuevos.")
         else:
             for s in new_streams:
-                self.download_queue.put(s)
-                log.info("[Pipeline] Encolado para descarga: %s", s["vod_id"])
+                self.db.enqueue(s)
+                log.info("[Pipeline] Encolado en DB para descarga: %s", s["vod_id"])
 
     def run_loop(self):
         interval = self.config["twitch"]["global"].get("check_interval_minutes", 30)

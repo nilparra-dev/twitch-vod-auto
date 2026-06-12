@@ -57,7 +57,9 @@
     "ffmpeg_folder": "./bin",
     "git_bash_path": "C:\\Program Files\\Git\\git-bash.exe",
     "use_npx": true,
+    "reencode_for_youtube": true,
     "cleanup_after_upload": true,
+    "cleanup_failed_uploads": false,
     "max_concurrent_downloads": 2
   },
   "monitoring": {

@@ -9,24 +9,12 @@
   "twitch": {
     "global": {
       "cookies_browser": null,
-      "cookies_file": null,
+      "cookies_file": "twitch_cookies.txt",
       "check_interval_minutes": 30,
       "request_delay_seconds": 3.0,
       "max_retries": 3
     },
-    "channels": [
-      {
-        "name": "nombre_canal_1",
-        "cookies_browser": null,
-        "cookies_file": null,
-        "youtube_overrides": {
-          "privacy_status": "private",
-          "tags": ["twitch", "vod", "stream"],
-          "category_id": "20",
-          "prefix_title": "[VOD]"
-        }
-      }
-    ]
+    "channels": []
   },
   "twitch_api": {
     "enabled": true,
@@ -46,7 +34,9 @@
     "ffmpeg_folder": "./bin",
     "git_bash_path": null,
     "use_npx": true,
+    "reencode_for_youtube": true,
     "cleanup_after_upload": true,
+    "cleanup_failed_uploads": false,
     "max_concurrent_downloads": 2
   },
   "monitoring": {

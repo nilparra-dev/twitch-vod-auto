@@ -153,6 +153,7 @@ def parse_twitch_vod_url(url: str) -> dict:
             "video_id": video_id,
             "start_time": start_time,
             "tracker_url": url,
+            "download_url": f"https://www.twitch.tv/videos/{video_id}",
         }
 
     # URL de streamscharts.com
@@ -171,6 +172,7 @@ def parse_twitch_vod_url(url: str) -> dict:
             "video_id": video_id,
             "start_time": start_time,
             "tracker_url": url,
+            "download_url": f"https://www.twitch.tv/videos/{video_id}",
         }
 
     # URL de twitch
@@ -188,6 +190,7 @@ def parse_twitch_vod_url(url: str) -> dict:
             "channel": "manual",
             "video_id": video_id,
             "start_time": start_time,
+            "download_url": f"https://www.twitch.tv/videos/{video_id}",
         }
 
     # Intentar extraer canal de URL tipo twitch.tv/channel

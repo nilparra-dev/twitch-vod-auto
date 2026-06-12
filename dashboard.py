@@ -3,8 +3,10 @@ import json
 import secrets
 import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -32,21 +34,63 @@ LOG_PATH = config.get("app", {}).get("log_file", "logs/pipeline.log")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 SECRET_KEY = os.getenv("SECRET_KEY")
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
+ALLOW_RANDOM_ADMIN_PASSWORD = os.getenv("ALLOW_RANDOM_ADMIN_PASSWORD", "false").lower() in ("1", "true", "yes")
+_login_attempts = {}
 
 if not SECRET_KEY:
     SECRET_KEY = secrets.token_urlsafe(32)
     logging.warning("[Auth] SECRET_KEY no definido, usando aleatorio (sesiones se invalidan al reiniciar)")
 
 if not ADMIN_PASSWORD:
-    ADMIN_PASSWORD = secrets.token_urlsafe(12)
-    logging.warning(f"[Auth] ADMIN_PASSWORD no definido. Usuario: {ADMIN_USER}  Password: {ADMIN_PASSWORD}")
-    logging.warning("[Auth] Define ADMIN_PASSWORD en .env o en las env vars del compose para fijarlo")
+    if not ALLOW_RANDOM_ADMIN_PASSWORD:
+        raise RuntimeError("ADMIN_PASSWORD no definido. Define ADMIN_PASSWORD en .env.")
+    ADMIN_PASSWORD = secrets.token_urlsafe(24)
+    logging.warning("[Auth] ADMIN_PASSWORD no definido. Usuario: %s Password temporal: %s", ADMIN_USER, ADMIN_PASSWORD)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(name)-12s | %(message)s")
 log = logging.getLogger("dashboard")
 
 app = FastAPI(title="Twitch VOD Auto - Admin", docs_url=None, redoc_url=None)
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, max_age=86400 * 7, same_site="lax")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    max_age=86400 * 7,
+    same_site="lax",
+    https_only=COOKIE_SECURE,
+)
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        host = request.headers.get("host", "").split(":", 1)[0]
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer")
+        origin_host = urlparse(origin).hostname if origin else None
+        referer_host = urlparse(referer).hostname if referer else None
+        if origin_host and origin_host != host:
+            return JSONResponse(status_code=403, content={"detail": "Origen no permitido"})
+        if not origin_host and referer_host and referer_host != host:
+            return JSONResponse(status_code=403, content={"detail": "Origen no permitido"})
+
+    response = await call_next(request)
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; frame-ancestors 'self'; form-action 'self'",
+    )
+    if COOKIE_SECURE:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 def get_db():
@@ -64,6 +108,30 @@ def require_auth(request: Request):
     return user
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_login_rate_limit(request: Request):
+    ip = _client_ip(request)
+    now = time.time()
+    window = 300
+    max_attempts = 8
+    attempts = [ts for ts in _login_attempts.get(ip, []) if now - ts < window]
+    if len(attempts) >= max_attempts:
+        _login_attempts[ip] = attempts
+        raise HTTPException(429, "Demasiados intentos. Espera unos minutos.")
+    attempts.append(now)
+    _login_attempts[ip] = attempts
+
+
+def _clear_login_attempts(request: Request):
+    _login_attempts.pop(_client_ip(request), None)
+
+
 # =============================================================================
 # Auth endpoints
 # =============================================================================
@@ -77,7 +145,10 @@ def login_page(request: Request):
 
 @app.post("/api/login")
 def api_login(request: Request, user: str = Form(...), password: str = Form(...)):
-    if user == ADMIN_USER and password == ADMIN_PASSWORD:
+    _check_login_rate_limit(request)
+    if secrets.compare_digest(user, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASSWORD):
+        _clear_login_attempts(request)
+        request.session.clear()
         request.session["user"] = user
         return {"status": "ok", "user": user}
     raise HTTPException(401, "Credenciales invalidas")
@@ -115,8 +186,10 @@ def api_stats(_: str = Depends(require_auth)):
 def api_vods(status: str = None, channel: str = None, search: str = None,
              limit: int = 25, offset: int = 0, _: str = Depends(require_auth)):
     db = get_db()
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
     vods = db.get_vods(status=status, channel=channel, search=search, limit=limit, offset=offset)
-    total = db.count_vods(status=status, channel=channel)
+    total = db.count_vods(status=status, channel=channel, search=search)
     return {"vods": vods, "total": total, "limit": limit, "offset": offset}
 
 
@@ -142,8 +215,9 @@ def api_vod_retry(vod_id: str, _: str = Depends(require_auth)):
         "video_id": vod["video_id"],
         "source": vod.get("source", "manual"),
         "start_time": 0,
-        "tracker_url": None,
-    })
+        "tracker_url": vod.get("tracker_url"),
+        "download_url": vod.get("download_url"),
+    }, force=True)
     return {"status": "ok", "message": "VOD reencolado"}
 
 
@@ -175,6 +249,7 @@ def api_queue_delete(vod_id: str, _: str = Depends(require_auth)):
 @app.get("/api/activity")
 def api_activity(days: int = 7, _: str = Depends(require_auth)):
     db = get_db()
+    days = max(1, min(int(days), 90))
     return {"activity": db.get_daily_activity(days=days)}
 
 
@@ -211,8 +286,14 @@ def api_health(_: str = Depends(require_auth)):
     }
 
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 @app.get("/api/logs")
 def api_logs(lines: int = 100, _: str = Depends(require_auth)):
+    lines = max(1, min(int(lines), 1000))
     if not os.path.exists(LOG_PATH):
         return {"logs": []}
     try:
@@ -226,10 +307,18 @@ def api_logs(lines: int = 100, _: str = Depends(require_auth)):
 
 @app.post("/api/manual_upload")
 def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
-    url_or_id = payload.get("url_or_id", "").strip()
-    custom_channel = payload.get("channel", "").strip()
-    custom_title = payload.get("title", "").strip()
-    privacy = payload.get("privacy", "private")
+    def payload_str(key: str, default: str = "", max_len: int = 500) -> str:
+        value = payload.get(key, default)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            value = str(value)
+        return value.strip()[:max_len]
+
+    url_or_id = payload_str("url_or_id", max_len=1000)
+    custom_channel = payload_str("channel", max_len=80)
+    custom_title = payload_str("title", max_len=100)
+    privacy = payload_str("privacy", default="private", max_len=20)
     tags = payload.get("tags", [])
 
     if not url_or_id:
@@ -241,10 +330,16 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
 
     db = get_db()
     vod_id = parsed["vod_id"]
-    channel = custom_channel or parsed.get("channel") or "manual"
+    channel = (custom_channel or parsed.get("channel") or "manual").lower()
     video_id = parsed["video_id"]
     start_time = parsed.get("start_time", 0)
     tracker_url = parsed.get("tracker_url")
+    download_url = parsed.get("download_url")
+    if privacy not in {"private", "unlisted", "public"}:
+        return JSONResponse(status_code=400, content={"error": "privacy invalida"})
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(tag).strip()[:50] for tag in tags if str(tag).strip()][:20]
 
     if db.is_processed(vod_id):
         return JSONResponse(status_code=409, content={"error": "Este VOD ya fue procesado", "vod_id": vod_id})
@@ -256,7 +351,7 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
         "tags": tags,
     })
 
-    db.add_vod(vod_id, channel, video_id, source_meta)
+    db.add_vod(vod_id, channel, video_id, source_meta, tracker_url=tracker_url, download_url=download_url)
     db.increment_stat(channel, "detected")
     db.enqueue({
         "vod_id": vod_id,
@@ -265,6 +360,7 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
         "source": source_meta,
         "start_time": start_time,
         "tracker_url": tracker_url,
+        "download_url": download_url,
     })
 
     return {"status": "queued", "vod_id": vod_id, "channel": channel, "video_id": video_id}
@@ -991,8 +1087,8 @@ const SVG={ok:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 
 function toast(msg,type='success'){
   const t=document.createElement('div');
-  t.className='toast '+type;
-  t.innerHTML=(type==='success'?SVG.ok:type==='error'?SVG.err:SVG.info)+'<span>'+msg+'</span>';
+  t.className='toast '+safeClass(type);
+  t.innerHTML=(type==='success'?SVG.ok:type==='error'?SVG.err:SVG.info)+'<span>'+escapeHtml(String(msg))+'</span>';
   document.getElementById('toasts').appendChild(t);
   setTimeout(()=>{t.classList.add('fade-out');setTimeout(()=>t.remove(),250)},3500);
 }
@@ -1040,14 +1136,24 @@ function fmtSecs(s){
 }
 
 function fmtBytes(mb){
-  if(!mb) return '0 MB';
-  if(mb>1024) return (mb/1024).toFixed(2)+' GB';
-  return mb.toFixed(1)+' MB';
+  const n=Number(mb);
+  if(!Number.isFinite(n)||n<=0) return '0 MB';
+  if(n>1024) return (n/1024).toFixed(2)+' GB';
+  return n.toFixed(1)+' MB';
 }
 
+function safeClass(s){return String(s??'').toLowerCase().replace(/[^a-z0-9_-]/g,'')||'unknown'}
+function esc(s){return escapeHtml(String(s??''))}
+function escAttr(s){return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function jsArg(s){return escAttr(JSON.stringify(String(s??'')))}
+function clampPct(value){const n=Number(value);return Number.isFinite(n)?Math.min(100,Math.max(0,n)):0}
+function badge(status){
+  const raw=String(status??'');
+  return `<span class="badge badge-${safeClass(raw)}">${esc(raw)}</span>`;
+}
 function skeletonRow(){return '<div class="skel-row"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'}
 function emptyState(msg,sub=''){
-  return `<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg><div class="empty-text">${msg}</div>${sub?`<div class="empty-sub">${sub}</div>`:''}</div>`;
+  return `<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg><div class="empty-text">${esc(msg)}</div>${sub?`<div class="empty-sub">${esc(sub)}</div>`:''}</div>`;
 }
 
 async function loadStats(){
@@ -1067,7 +1173,7 @@ async function loadStats(){
     if(!d.stats.length){statsBox.innerHTML=emptyState('Sin datos','Aun no hay estadisticas de canales')}
     else{
       statsBox.innerHTML='<div class="table-wrap"><table><thead><tr><th>Canal</th><th>Detectados</th><th>Subidos</th><th>Fallidos</th></tr></thead><tbody>'+
-        d.stats.map(s=>`<tr><td>${s.channel}</td><td>${s.total_detected}</td><td>${s.total_uploaded}</td><td>${s.total_failed||0}</td></tr>`).join('')+'</tbody></table></div>';
+        d.stats.map(s=>`<tr><td>${esc(s.channel)}</td><td>${Number(s.total_detected)||0}</td><td>${Number(s.total_uploaded)||0}</td><td>${Number(s.total_failed)||0}</td></tr>`).join('')+'</tbody></table></div>';
     }
 
     const vodsBox=document.getElementById('overview-vods');
@@ -1076,8 +1182,8 @@ async function loadStats(){
     else{
       vodsBox.innerHTML='<div class="table-wrap"><table><thead><tr><th>Canal</th><th>Estado</th><th>YouTube</th></tr></thead><tbody>'+
         recent.map(v=>{
-          const yt=v.youtube_id?`<a href="https://youtu.be/${v.youtube_id}" target="_blank" style="color:var(--accent)">${v.youtube_id}</a>`:'-';
-          return `<tr><td>${v.channel}</td><td><span class="badge badge-${v.status}">${v.status}</span></td><td>${yt}</td></tr>`;
+          const yt=v.youtube_id?`<a href="https://youtu.be/${escAttr(v.youtube_id)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(v.youtube_id)}</a>`:'-';
+          return `<tr><td>${esc(v.channel)}</td><td>${badge(v.status)}</td><td>${yt}</td></tr>`;
         }).join('')+'</tbody></table></div>';
     }
     loadActivityChart();
@@ -1103,20 +1209,20 @@ function renderLiveDownloads(){
   countEl.textContent=` (${items.length})`;
   updEl.textContent='Actualizado '+new Date().toLocaleTimeString();
   body.innerHTML=items.map(p=>{
-    const pct=p.percent||0;
+    const pct=clampPct(p.percent);
     const statusLabel=p.status==='encoding'?'Reencoding':'Descargando';
     const totalMb=p.total_size_mb||0;
     const downMb=p.downloaded_mb||0;
     const sizeInfo=totalMb?`${fmtBytes(downMb)} / ${fmtBytes(totalMb)}`:'-';
-    const channel=p.channel||(p.vod_id.split('_')[0]||'').replace('video:','');
+    const channel=p.channel||(String(p.vod_id||'').split('_')[0]||'').replace('video:','');
     return `<div class="live-item">
-      <div class="live-name">${channel} <span class="badge badge-${p.status}">${statusLabel}</span></div>
+      <div class="live-name">${esc(channel)} ${badge(statusLabel)}</div>
       <div class="live-pct">${pct.toFixed(1)}%</div>
       <div class="live-bar"><div class="live-bar-fill" style="width:${pct}%"></div></div>
       <div class="live-meta">
         <div class="live-meta-item"><span class="live-meta-label">Tamano</span><span class="live-meta-value">${sizeInfo}</span></div>
-        <div class="live-meta-item"><span class="live-meta-label">Velocidad</span><span class="live-meta-value">${p.speed||'-'}</span></div>
-        <div class="live-meta-item"><span class="live-meta-label">ETA</span><span class="live-meta-value">${p.eta||'-'}</span></div>
+        <div class="live-meta-item"><span class="live-meta-label">Velocidad</span><span class="live-meta-value">${esc(p.speed||'-')}</span></div>
+        <div class="live-meta-item"><span class="live-meta-label">ETA</span><span class="live-meta-value">${esc(p.eta||'-')}</span></div>
         <div class="live-meta-item"><span class="live-meta-label">Transcurrido</span><span class="live-meta-value">${fmtSecs(p.elapsed_seconds)}</span></div>
       </div>
     </div>`;
@@ -1131,20 +1237,21 @@ async function loadVods(offset=0){
     const status=document.getElementById('vod-status').value;
     const channel=document.getElementById('vod-channel').value;
     const search=document.getElementById('vod-search').value;
-    const d=await api(`/api/vods?status=${status}&channel=${channel}&search=${encodeURIComponent(search)}&limit=25&offset=${offset}`);
+    const d=await api(`/api/vods?status=${encodeURIComponent(status)}&channel=${encodeURIComponent(channel)}&search=${encodeURIComponent(search)}&limit=25&offset=${offset}`);
     if(!d.vods.length){box.innerHTML=emptyState('Sin resultados','Prueba a cambiar los filtros');return}
     box.innerHTML='<div class="table-wrap"><table><thead><tr><th>VOD ID</th><th>Canal</th><th>Estado</th><th>Tamano</th><th>YouTube</th><th>Detectado</th><th></th></tr></thead><tbody>'+
       d.vods.map(v=>{
         const size=v.file_size_mb?fmtBytes(v.file_size_mb):'-';
-        const yt=v.youtube_id?`<a href="https://youtu.be/${v.youtube_id}" target="_blank" style="color:var(--accent)">${v.youtube_id}</a>`:'-';
+        const yt=v.youtube_id?`<a href="https://youtu.be/${escAttr(v.youtube_id)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(v.youtube_id)}</a>`:'-';
         const detected=v.detected_at?v.detected_at.replace('T',' ').slice(0,16):'-';
-        const vodShort=v.vod_id.length>32?v.vod_id.slice(0,29)+'...':v.vod_id;
+        const vodShort=String(v.vod_id).length>32?String(v.vod_id).slice(0,29)+'...':String(v.vod_id);
         const progress=activeProgress[v.vod_id];
-        const sizeCell=progress?`<div style="min-width:120px"><div style="background:var(--bg);border-radius:4px;height:6px;overflow:hidden;border:1px solid var(--border-soft)"><div style="background:var(--accent);height:100%;width:${progress.percent||0}%;transition:width .5s"></div></div><div style="font-size:10px;color:var(--text-dim);margin-top:2px">${(progress.percent||0).toFixed(1)}% &middot; ${progress.speed||''}</div></div>`:size;
+        const pPct=progress?clampPct(progress.percent):0;
+        const sizeCell=progress?`<div style="min-width:120px"><div style="background:var(--bg);border-radius:4px;height:6px;overflow:hidden;border:1px solid var(--border-soft)"><div style="background:var(--accent);height:100%;width:${pPct}%;transition:width .5s"></div></div><div style="font-size:10px;color:var(--text-dim);margin-top:2px">${pPct.toFixed(1)}% &middot; ${esc(progress.speed||'')}</div></div>`:size;
         let actions='';
-        if(v.status==='failed'||v.status==='pending') actions+=`<button class="btn small ghost" onclick="retryVod('${v.vod_id}')" title="Reintentar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>`;
-        actions+=`<button class="btn small ghost" onclick="deleteVod('${v.vod_id}')" title="Eliminar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
-        return `<tr><td title="${v.vod_id}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${vodShort}</td><td>${v.channel}</td><td><span class="badge badge-${v.status}">${v.status}</span></td><td>${sizeCell}</td><td>${yt}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${detected}</td><td><div style="display:flex;gap:4px">${actions}</div></td></tr>`;
+        if(v.status==='failed'||v.status==='pending') actions+=`<button class="btn small ghost" onclick="retryVod(${jsArg(v.vod_id)})" title="Reintentar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>`;
+        actions+=`<button class="btn small ghost" onclick="deleteVod(${jsArg(v.vod_id)})" title="Eliminar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+        return `<tr><td title="${escAttr(v.vod_id)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(vodShort)}</td><td>${esc(v.channel)}</td><td>${badge(v.status)}</td><td>${sizeCell}</td><td>${yt}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${esc(detected)}</td><td><div style="display:flex;gap:4px">${actions}</div></td></tr>`;
       }).join('')+'</tbody></table></div>';
     const total=d.total;
     const totalPages=Math.max(1,Math.ceil(total/25));
@@ -1163,9 +1270,9 @@ async function loadQueue(){
     if(!d.queue.length){box.innerHTML=emptyState('Cola vacia','Encola un VOD desde la seccion Subida manual');return}
     box.innerHTML='<div class="table-wrap"><table><thead><tr><th>VOD ID</th><th>Canal</th><th>Estado</th><th>Intentos</th><th>Creado</th><th></th></tr></thead><tbody>'+
       d.queue.map(q=>{
-        const vid=q.vod_id.length>32?q.vod_id.slice(0,29)+'...':q.vod_id;
+        const vid=String(q.vod_id).length>32?String(q.vod_id).slice(0,29)+'...':String(q.vod_id);
         const created=q.created_at?q.created_at.replace('T',' ').slice(0,16):'-';
-        return `<tr><td title="${q.vod_id}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${vid}</td><td>${q.channel}</td><td><span class="badge badge-${q.status}">${q.status}</span></td><td>${q.attempts||0}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${created}</td><td><button class="btn small ghost" onclick="deleteFromQueue('${q.vod_id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button></td></tr>`;
+        return `<tr><td title="${escAttr(q.vod_id)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(vid)}</td><td>${esc(q.channel)}</td><td>${badge(q.status)}</td><td>${Number(q.attempts)||0}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${esc(created)}</td><td><button class="btn small ghost" onclick="deleteFromQueue(${jsArg(q.vod_id)})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button></td></tr>`;
       }).join('')+'</tbody></table></div>';
     const active=d.queue.filter(q=>q.status==='queued'||q.status==='downloading').length;
     document.getElementById('badge-queue').textContent=active;document.getElementById('badge-queue').style.display=active?'inline':'none';
@@ -1183,7 +1290,7 @@ async function loadLogs(){
       if(m){
         const ts=m[1];const lvl=m[2];
         const msg=l.replace(/^\\S+\\s+\\|\\s+\\w+\\s+\\|\\s+/,'');
-        return `<div class="log-line"><span class="log-time">${ts}</span><span class="log-level log-level-${lvl}">${lvl.padEnd(7)}</span><span class="log-msg">${escapeHtml(msg)}</span></div>`;
+        return `<div class="log-line"><span class="log-time">${esc(ts)}</span><span class="log-level log-level-${safeClass(lvl)}">${esc(lvl.padEnd(7))}</span><span class="log-msg">${escapeHtml(msg)}</span></div>`;
       }
       return `<div class="log-line"><span class="log-msg">${escapeHtml(l)}</span></div>`;
     }).join('');
@@ -1191,7 +1298,14 @@ async function loadLogs(){
   }catch(e){console.error(e)}
 }
 
-function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function escapeHtml(s){
+  return String(s??'')
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
 
 async function manualUpload(){
   const url=document.getElementById('manual-url').value.trim();
@@ -1218,7 +1332,7 @@ async function retryVod(vodId){
 function deleteVod(vodId){
   showModal({
     title:'Eliminar VOD',
-    body:`<p>Vas a eliminar el VOD <code style="font-family:'JetBrains Mono',monospace;background:var(--surface-2);padding:2px 6px;border-radius:4px">${vodId}</code> del sistema. Esto borrara su registro, progreso y entrada en la cola. La accion no se puede deshacer.</p>`,
+    body:`<p>Vas a eliminar el VOD <code style="font-family:'JetBrains Mono',monospace;background:var(--surface-2);padding:2px 6px;border-radius:4px">${esc(vodId)}</code> del sistema. Esto borrara su registro, progreso y entrada en la cola. La accion no se puede deshacer.</p>`,
     confirm:{label:'Eliminar',class:'danger',action:async()=>{try{await api(`/api/vods/${encodeURIComponent(vodId)}`,{method:'DELETE'});toast('VOD eliminado');loadVods(currentVodOffset);loadStats()}catch(e){toast(e.message,'error')}}},
   });
 }
@@ -1226,7 +1340,7 @@ function deleteVod(vodId){
 function deleteFromQueue(vodId){
   showModal({
     title:'Quitar de la cola',
-    body:`<p>Quitar <code style="font-family:'JetBrains Mono',monospace;background:var(--surface-2);padding:2px 6px;border-radius:4px">${vodId}</code> de la cola de descargas?</p>`,
+    body:`<p>Quitar <code style="font-family:'JetBrains Mono',monospace;background:var(--surface-2);padding:2px 6px;border-radius:4px">${esc(vodId)}</code> de la cola de descargas?</p>`,
     confirm:{label:'Quitar',class:'danger',action:async()=>{try{await api(`/api/queue/${encodeURIComponent(vodId)}`,{method:'DELETE'});toast('Quitado de la cola');loadQueue()}catch(e){toast(e.message,'error')}}},
   });
 }
@@ -1237,7 +1351,7 @@ function showModal({title,body,confirm}){
   document.getElementById('modal-body').innerHTML=body;
   const footer=document.getElementById('modal-footer');
   _modalConfirmAction=confirm?confirm.action:null;
-  footer.innerHTML=`<button class="btn ghost" onclick="closeModal()">Cancelar</button>`+(confirm?`<button class="btn ${confirm.class||'primary'}" id="modal-confirm-btn">${confirm.label}</button>`:'');
+  footer.innerHTML=`<button class="btn ghost" onclick="closeModal()">Cancelar</button>`+(confirm?`<button class="btn ${safeClass(confirm.class||'primary')}" id="modal-confirm-btn">${esc(confirm.label)}</button>`:'');
   const btn=document.getElementById('modal-confirm-btn');
   if(btn){
     btn.onclick=async()=>{
@@ -1255,7 +1369,7 @@ document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='
 function showUserMenu(){
   showModal({
     title:'Sesion',
-    body:`<p>Conectado como <strong>${currentUser}</strong></p><p style="margin-top:10px">Sesion valida 7 dias. Para cerrarla, pulsa el boton de abajo.</p>`,
+    body:`<p>Conectado como <strong>${esc(currentUser)}</strong></p><p style="margin-top:10px">Sesion valida 7 dias. Para cerrarla, pulsa el boton de abajo.</p>`,
     confirm:{label:'Cerrar sesion',class:'danger',action:async()=>{try{await api('/api/logout',{method:'POST'});window.location='/login'}catch(e){toast(e.message,'error')}}},
   });
 }
