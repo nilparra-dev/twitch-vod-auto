@@ -17,13 +17,17 @@ Si el pipeline detecta este caso, aparta el token anterior como `youtube_credent
 
 ### Renovacion desde el dashboard
 
-El dashboard puede renovar `youtube_credentials.pkl` directamente en el VPS desde la seccion **YouTube**. Para usarlo, `client_secret.json` debe ser un OAuth Client de tipo **Web application** y tener autorizada esta callback:
+El dashboard puede renovar `youtube_credentials.pkl` directamente en el VPS desde la seccion **YouTube**.
+
+Con un OAuth Client de tipo **Web application**, la renovacion vuelve automaticamente al dashboard. Autoriza esta callback en Google Cloud:
 
 ```
 https://TU_DOMINIO/api/youtube/oauth/callback
 ```
 
 En produccion define tambien `DASHBOARD_PUBLIC_URL=https://TU_DOMINIO` en `.env` si el dashboard no puede inferir bien la URL publica desde nginx.
+
+Con un OAuth Client de tipo **Desktop app**, el panel abre Google y luego hay que pegar en el dashboard la URL final de `localhost` que contiene el parametro `code`. El dashboard guardara igualmente el token en el VPS.
 
 ### Causa #1: Tu email no esta en "Test users" (90% de los casos)
 

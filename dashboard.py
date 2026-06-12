@@ -8,7 +8,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -144,6 +144,10 @@ def _youtube_redirect_uri(request: Request) -> str:
     return f"{proto}://{host}/api/youtube/oauth/callback"
 
 
+def _youtube_installed_redirect_uri() -> str:
+    return os.getenv("YOUTUBE_OAUTH_LOCAL_REDIRECT_URI", "http://localhost:53682/").strip()
+
+
 def _youtube_credentials_status(path: str) -> dict:
     status = {
         "exists": os.path.isfile(path),
@@ -174,6 +178,19 @@ def _youtube_credentials_status(path: str) -> dict:
         status["error"] = str(e)
 
     return status
+
+
+def _extract_oauth_code(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if "://" not in value and "&" not in value and "code=" not in value:
+        return value
+
+    parsed = urlparse(value)
+    query = parsed.query or value
+    params = parse_qs(query)
+    return (params.get("code") or [""])[0]
 
 
 def _write_youtube_credentials(credentials, path: str):
@@ -452,7 +469,9 @@ def api_youtube_oauth_status(request: Request, _: str = Depends(require_auth)):
         "client_secret_type": client_type,
         "credentials": _youtube_credentials_status(credentials_file),
         "redirect_uri": redirect_uri,
-        "ready": client_secret_exists and client_type == "web",
+        "installed_redirect_uri": _youtube_installed_redirect_uri(),
+        "mode": "web" if client_type == "web" else ("installed" if client_type == "installed" else "unsupported"),
+        "ready": client_secret_exists and client_type in {"web", "installed"},
     }
 
 
@@ -463,13 +482,14 @@ def api_youtube_oauth_start(request: Request, _: str = Depends(require_auth)):
         raise HTTPException(400, "Falta client_secret.json en el servidor")
 
     client_type = _client_secret_type(client_secret_file)
-    redirect_uri = _youtube_redirect_uri(request)
-    if client_type != "web":
-        raise HTTPException(
-            400,
-            "Para renovar desde el dashboard, client_secret.json debe ser OAuth Web application "
-            f"y tener esta redirect URI autorizada: {redirect_uri}",
-        )
+    if client_type == "web":
+        redirect_uri = _youtube_redirect_uri(request)
+        mode = "web"
+    elif client_type == "installed":
+        redirect_uri = _youtube_installed_redirect_uri()
+        mode = "installed"
+    else:
+        raise HTTPException(400, "client_secret.json no es OAuth Web application ni Desktop app")
 
     flow = Flow.from_client_secrets_file(
         client_secret_file,
@@ -483,8 +503,53 @@ def api_youtube_oauth_start(request: Request, _: str = Depends(require_auth)):
     )
     request.session["youtube_oauth_state"] = state
     request.session["youtube_oauth_redirect_uri"] = redirect_uri
+    request.session["youtube_oauth_mode"] = mode
     request.session["youtube_oauth_started_at"] = int(time.time())
-    return {"authorization_url": authorization_url, "redirect_uri": redirect_uri}
+    return {"authorization_url": authorization_url, "redirect_uri": redirect_uri, "mode": mode}
+
+
+@app.post("/api/youtube/oauth/complete")
+def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends(require_auth)):
+    expected_state = request.session.get("youtube_oauth_state")
+    redirect_uri = request.session.get("youtube_oauth_redirect_uri")
+    mode = request.session.get("youtube_oauth_mode")
+    started_at = int(request.session.get("youtube_oauth_started_at") or 0)
+
+    if mode != "installed" or not expected_state or not redirect_uri:
+        raise HTTPException(400, "No hay una renovacion OAuth Desktop pendiente")
+    if time.time() - started_at > 15 * 60:
+        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_started_at"):
+            request.session.pop(key, None)
+        raise HTTPException(400, "La renovacion OAuth ha caducado; inicia otra")
+
+    callback_url = str(payload.get("callback_url") or "")
+    code = _extract_oauth_code(callback_url or str(payload.get("code") or ""))
+    pasted_state = (parse_qs(urlparse(callback_url).query).get("state") or [""])[0] if callback_url else ""
+    if pasted_state and not secrets.compare_digest(pasted_state, expected_state):
+        raise HTTPException(400, "El state de OAuth no coincide; inicia otra renovacion")
+    if not code:
+        raise HTTPException(400, "No se encontro el parametro code en el texto pegado")
+
+    try:
+        flow = Flow.from_client_secrets_file(
+            _youtube_client_secret_file(),
+            scopes=SCOPES,
+            state=expected_state,
+            redirect_uri=redirect_uri,
+        )
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+        if not getattr(credentials, "refresh_token", None):
+            raise RuntimeError("Google no devolvio refresh_token")
+        _write_youtube_credentials(credentials, _youtube_credentials_file())
+        log.info("[YouTubeOAuth] Token de YouTube renovado desde dashboard con flujo Desktop")
+        return {"status": "ok"}
+    except Exception as e:
+        log.error("[YouTubeOAuth] Error completando OAuth Desktop: %s", e)
+        raise HTTPException(400, f"No se pudo completar OAuth: {e}")
+    finally:
+        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_started_at"):
+            request.session.pop(key, None)
 
 
 @app.get("/api/youtube/oauth/callback", name="youtube_oauth_callback")
@@ -498,7 +563,7 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
     expected_state = request.session.get("youtube_oauth_state")
     redirect_uri = request.session.get("youtube_oauth_redirect_uri")
     started_at = int(request.session.get("youtube_oauth_started_at") or 0)
-    for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_started_at"):
+    for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_started_at"):
         request.session.pop(key, None)
 
     if error:
@@ -1710,8 +1775,10 @@ function renderYouTubeOAuthStatus(d){
   const c=d.credentials||{};
   const tokenState=!c.exists?'No existe':(c.error?'Invalido':(c.has_refresh_token?'Disponible':'Sin refresh token'));
   const validState=c.valid?'Valido':(c.expired?'Caducado':'No validado');
+  const mode=d.mode==='web'?'Callback directa':(d.mode==='installed'?'Desktop con pegado de URL':'No soportado');
   const rows=[
     ['OAuth client', d.client_secret_exists?d.client_secret_type:'No encontrado'],
+    ['Modo', mode],
     ['Callback', d.redirect_uri||'-'],
     ['Token', tokenState],
     ['Estado', validState],
@@ -1721,7 +1788,7 @@ function renderYouTubeOAuthStatus(d){
   const btn=document.getElementById('youtube-oauth-btn');
   if(btn){
     btn.disabled=!d.ready;
-    btn.title=d.ready?'Renovar token de YouTube':'Requiere OAuth client Web application con la callback indicada';
+    btn.title=d.ready?'Renovar token de YouTube':'Falta client_secret.json o no es un OAuth client valido';
   }
 }
 
@@ -1742,11 +1809,38 @@ async function startYouTubeOAuth(){
   try{
     if(btn){btn.disabled=true;btn.textContent='Abriendo Google...'}
     const d=await api('/api/youtube/oauth/start',{method:'POST'});
-    window.location=d.authorization_url;
+    if(d.mode==='web'){
+      window.location=d.authorization_url;
+      return;
+    }
+    showInstalledOAuthModal(d.authorization_url,d.redirect_uri);
+    if(btn){btn.disabled=false;btn.textContent='Renovar token'}
   }catch(e){
     toast(e.message,'error');
     if(btn){btn.disabled=false;btn.textContent='Renovar token'}
   }
+}
+
+function showInstalledOAuthModal(url,redirectUri){
+  showModal({
+    title:'Renovar YouTube',
+    body:`<p>Abre Google, acepta el permiso y copia la URL final que empieza por <code style="font-family:'JetBrains Mono',monospace;background:var(--surface-2);padding:2px 6px;border-radius:4px">${esc(redirectUri)}</code>.</p>
+      <p style="margin-top:10px"><a class="btn primary" href="${escAttr(url)}" target="_blank" rel="noopener">Abrir Google</a></p>
+      <div class="form-group" style="margin-top:14px">
+        <label>URL final o parametro code</label>
+        <textarea id="youtube-oauth-callback" class="input" style="min-height:92px;resize:vertical;font-family:'JetBrains Mono',monospace" placeholder="http://localhost:53682/?state=...&code=..."></textarea>
+      </div>`,
+    confirm:{label:'Guardar token',class:'primary',action:completeInstalledOAuth},
+  });
+}
+
+async function completeInstalledOAuth(){
+  const input=document.getElementById('youtube-oauth-callback');
+  const callbackUrl=input?input.value.trim():'';
+  if(!callbackUrl){throw new Error('Pega la URL final de Google')}
+  await api('/api/youtube/oauth/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callback_url:callbackUrl})});
+  toast('Token de YouTube renovado','success');
+  loadYouTubeOAuthStatus();
 }
 
 async function retryVod(vodId){
