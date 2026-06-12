@@ -1,0 +1,57 @@
+{
+  "app": {
+    "log_level": "INFO",
+    "log_file": "logs/pipeline.log",
+    "max_workers_download": 2,
+    "max_workers_upload": 1,
+    "parallel_monitor": true
+  },
+  "twitch": {
+    "global": {
+      "cookies_browser": null,
+      "cookies_file": null,
+      "check_interval_minutes": 30,
+      "request_delay_seconds": 3.0,
+      "max_retries": 3
+    },
+    "channels": [
+      {
+        "name": "nombre_canal_1",
+        "cookies_browser": null,
+        "cookies_file": null,
+        "youtube_overrides": {
+          "privacy_status": "private",
+          "tags": ["twitch", "vod", "stream"],
+          "category_id": "20",
+          "prefix_title": "[VOD]"
+        }
+      }
+    ]
+  },
+  "twitch_api": {
+    "enabled": true,
+    "max_vods_per_channel": 10,
+    "period": "month"
+  },
+  "youtube": {
+    "client_secrets_file": "client_secret.json",
+    "credentials_file": "youtube_credentials.pkl",
+    "default_privacy_status": "private",
+    "default_tags": ["twitch", "vod", "stream"],
+    "default_category_id": "20",
+    "default_prefix_title": ""
+  },
+  "download": {
+    "output_folder": "./downloads",
+    "ffmpeg_folder": "./bin",
+    "git_bash_path": null,
+    "use_npx": true,
+    "cleanup_after_upload": true,
+    "max_concurrent_downloads": 2
+  },
+  "monitoring": {
+    "db_path": "data/pipeline.db",
+    "sources": ["twitchtracker", "streamscharts"]
+  },
+  "proxy": null
+}

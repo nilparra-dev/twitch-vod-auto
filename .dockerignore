@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Credenciales y datos sensibles
+client_secret*.json
+youtube_credentials.pkl
+twitch_cookies.txt
+*.cookie
+.env
+
+# Logs y datos de proceso
+logs/
+processed.json
+*.log
+
+# Descargas (temporales)
+downloads/
+*.mp4
+*.ts
+*.part
+*.ytdl
+*.jpg
+
+# Temporales
+ffmpeg_temp/
+ffmpeg.zip
+bin/
+
+# DB (se monta como volumen en Docker)
+data/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore

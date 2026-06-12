@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  pipeline:
+    build: .
+    container_name: twitch-vod-auto
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./downloads:/app/downloads
+      - ./client_secret.json:/app/client_secret.json:ro
+      - ./youtube_credentials.pkl:/app/youtube_credentials.pkl
+      - ./.env:/app/.env:ro
+      - ./config.json:/app/config.json:ro
+    environment:
+      - CONFIG_PATH=/app/config.json
+      - PYTHONUNBUFFERED=1
+    # Para OAuth de YouTube puede necesitar interaccion
+    # Si ya tienes youtube_credentials.pkl generado en local, copialo al volumen
+
+  dashboard:
+    build: .
+    container_name: twitch-vod-dashboard
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "dashboard:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.json:/app/config.json:ro
+    environment:
+      - CONFIG_PATH=/app/config.json
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - pipeline
