@@ -105,8 +105,11 @@ jobs:
               echo "WARNING: falta $required_file en produccion."
             fi
           done
+          if [ ! -f secrets/twitch_cookies.txt ]; then
+            echo "WARNING: falta secrets/twitch_cookies.txt; las descargas privadas pueden fallar sin cookies."
+          fi
 
-          mkdir -p data logs downloads certbot-data certbot-www
+          mkdir -p data logs downloads certbot-data certbot-www secrets
           docker compose -f docker-compose.prod.yml up --build -d --remove-orphans
           docker compose -f docker-compose.prod.yml ps
           EOF

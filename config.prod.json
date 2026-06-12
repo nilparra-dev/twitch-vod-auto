@@ -9,7 +9,7 @@
   "twitch": {
     "global": {
       "cookies_browser": null,
-      "cookies_file": "twitch_cookies.txt",
+      "cookies_file": "secrets/twitch_cookies.txt",
       "check_interval_minutes": 30,
       "request_delay_seconds": 3.0,
       "max_retries": 3

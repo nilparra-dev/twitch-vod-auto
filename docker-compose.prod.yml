@@ -11,7 +11,7 @@ services:
       - ./downloads:/app/downloads
       - ./client_secret.json:/app/client_secret.json:ro
       - ./youtube_credentials.pkl:/app/youtube_credentials.pkl
-      - ./twitch_cookies.txt:/app/twitch_cookies.txt:ro
+      - ./secrets:/app/secrets:ro
       - ./config.prod.local.json:/app/config.json:ro
       - ./.env:/app/.env:ro
     environment:

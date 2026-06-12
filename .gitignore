@@ -36,6 +36,7 @@ bin/
 data/
 certbot-data/
 certbot-www/
+secrets/
 
 # IDEs
 .vscode/

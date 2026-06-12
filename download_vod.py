@@ -74,9 +74,11 @@ def download_vod_auto(
     # Opciones de autenticacion
     auth_args = []
     cookies_file = twitch_cfg.get("cookies_file")
-    if cookies_file and os.path.exists(cookies_file):
+    if cookies_file and os.path.isfile(cookies_file):
         auth_args = ["--cookies", cookies_file]
         log.info("[Download] Usando cookies_file: %s", cookies_file)
+    elif cookies_file:
+        log.warning("[Download] cookies_file configurado pero no es un archivo valido: %s", cookies_file)
     elif twitch_cfg.get("cookies_browser"):
         auth_args = ["--cookies-from-browser", twitch_cfg["cookies_browser"]]
         log.info("[Download] Usando cookies_browser: %s", twitch_cfg["cookies_browser"])
