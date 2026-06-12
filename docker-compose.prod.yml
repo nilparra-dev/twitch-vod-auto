@@ -32,12 +32,16 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./client_secret.json:/app/client_secret.json:ro
+      - ./youtube_credentials.pkl:/app/youtube_credentials.pkl
       - ./config.prod.local.json:/app/config.json:ro
     environment:
       - CONFIG_PATH=/app/config.json
       - PYTHONUNBUFFERED=1
       - DASHBOARD_HOST=0.0.0.0
       - DASHBOARD_PORT=8080
+      - DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL:-}
+      - YOUTUBE_OAUTH_REDIRECT_URI=${YOUTUBE_OAUTH_REDIRECT_URI:-}
       - ADMIN_USER=${ADMIN_USER:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD requerido en .env}
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY requerido en .env}

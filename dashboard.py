@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import pickle
 import secrets
 import logging
 import sqlite3
@@ -12,11 +13,13 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from google_auth_oauthlib.flow import Flow
 from starlette.middleware.sessions import SessionMiddleware
 
 from db import PipelineDB
 from utils import parse_twitch_vod_url
 from progress import DownloadProgress
+from youtube_uploader import SCOPES
 
 # =============================================================================
 # Config & globals
@@ -100,6 +103,94 @@ def get_db():
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
+
+
+def _youtube_cfg():
+    return config.get("youtube", {})
+
+
+def _youtube_client_secret_file() -> str:
+    return _youtube_cfg().get("client_secrets_file", "client_secret.json")
+
+
+def _youtube_credentials_file() -> str:
+    return _youtube_cfg().get("credentials_file", "youtube_credentials.pkl")
+
+
+def _client_secret_type(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "web" in data:
+            return "web"
+        if "installed" in data:
+            return "installed"
+    except Exception:
+        return "invalid"
+    return "unknown"
+
+
+def _youtube_redirect_uri(request: Request) -> str:
+    explicit = os.getenv("YOUTUBE_OAUTH_REDIRECT_URI", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    public_url = os.getenv("DASHBOARD_PUBLIC_URL", "").strip().rstrip("/")
+    if public_url:
+        return f"{public_url}/api/youtube/oauth/callback"
+
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}/api/youtube/oauth/callback"
+
+
+def _youtube_credentials_status(path: str) -> dict:
+    status = {
+        "exists": os.path.isfile(path),
+        "valid": False,
+        "expired": None,
+        "has_refresh_token": False,
+        "expiry": None,
+        "updated_at": None,
+        "error": None,
+    }
+    if not status["exists"]:
+        return status
+
+    try:
+        mtime = os.path.getmtime(path)
+        status["updated_at"] = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        with open(path, "rb") as token:
+            credentials = pickle.load(token)
+        status["valid"] = bool(getattr(credentials, "valid", False))
+        status["expired"] = bool(getattr(credentials, "expired", False))
+        status["has_refresh_token"] = bool(getattr(credentials, "refresh_token", None))
+        expiry = getattr(credentials, "expiry", None)
+        if expiry:
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            status["expiry"] = expiry.astimezone(timezone.utc).isoformat()
+    except Exception as e:
+        status["error"] = str(e)
+
+    return status
+
+
+def _write_youtube_credentials(credentials, path: str):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    if os.path.isdir(path):
+        raise RuntimeError(f"{path} es un directorio; revisa el bind mount de Docker")
+
+    with open(path, "wb") as token:
+        pickle.dump(credentials, token)
+        token.flush()
+        os.fsync(token.fileno())
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def require_auth(request: Request):
@@ -347,6 +438,102 @@ def api_health(_: str = Depends(require_auth)):
         "log_size_bytes": log_size,
         "uptime": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/api/youtube/oauth/status")
+def api_youtube_oauth_status(request: Request, _: str = Depends(require_auth)):
+    client_secret_file = _youtube_client_secret_file()
+    credentials_file = _youtube_credentials_file()
+    client_secret_exists = os.path.isfile(client_secret_file)
+    client_type = _client_secret_type(client_secret_file) if client_secret_exists else "missing"
+    redirect_uri = _youtube_redirect_uri(request)
+    return {
+        "client_secret_exists": client_secret_exists,
+        "client_secret_type": client_type,
+        "credentials": _youtube_credentials_status(credentials_file),
+        "redirect_uri": redirect_uri,
+        "ready": client_secret_exists and client_type == "web",
+    }
+
+
+@app.post("/api/youtube/oauth/start")
+def api_youtube_oauth_start(request: Request, _: str = Depends(require_auth)):
+    client_secret_file = _youtube_client_secret_file()
+    if not os.path.isfile(client_secret_file):
+        raise HTTPException(400, "Falta client_secret.json en el servidor")
+
+    client_type = _client_secret_type(client_secret_file)
+    redirect_uri = _youtube_redirect_uri(request)
+    if client_type != "web":
+        raise HTTPException(
+            400,
+            "Para renovar desde el dashboard, client_secret.json debe ser OAuth Web application "
+            f"y tener esta redirect URI autorizada: {redirect_uri}",
+        )
+
+    flow = Flow.from_client_secrets_file(
+        client_secret_file,
+        scopes=SCOPES,
+        redirect_uri=redirect_uri,
+    )
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    request.session["youtube_oauth_state"] = state
+    request.session["youtube_oauth_redirect_uri"] = redirect_uri
+    request.session["youtube_oauth_started_at"] = int(time.time())
+    return {"authorization_url": authorization_url, "redirect_uri": redirect_uri}
+
+
+@app.get("/api/youtube/oauth/callback", name="youtube_oauth_callback")
+def youtube_oauth_callback(request: Request, state: str = None, code: str = None, error: str = None):
+    if not request.session.get("user"):
+        return RedirectResponse("/login?next=/", status_code=302)
+
+    def done(result: str):
+        return RedirectResponse(f"/?youtube_oauth={result}", status_code=302)
+
+    expected_state = request.session.get("youtube_oauth_state")
+    redirect_uri = request.session.get("youtube_oauth_redirect_uri")
+    started_at = int(request.session.get("youtube_oauth_started_at") or 0)
+    for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_started_at"):
+        request.session.pop(key, None)
+
+    if error:
+        log.warning("[YouTubeOAuth] Google devolvio error: %s", error)
+        return done("error")
+    if not code or not state or not expected_state or not redirect_uri:
+        log.warning("[YouTubeOAuth] Callback incompleto")
+        return done("error")
+    if not secrets.compare_digest(state, expected_state):
+        log.warning("[YouTubeOAuth] State invalido")
+        return done("error")
+    if time.time() - started_at > 15 * 60:
+        log.warning("[YouTubeOAuth] State caducado")
+        return done("error")
+
+    try:
+        flow = Flow.from_client_secrets_file(
+            _youtube_client_secret_file(),
+            scopes=SCOPES,
+            state=state,
+            redirect_uri=redirect_uri,
+        )
+        query = request.url.query
+        authorization_response = f"{redirect_uri}?{query}" if query else redirect_uri
+        flow.fetch_token(authorization_response=authorization_response)
+        credentials = flow.credentials
+        if not getattr(credentials, "refresh_token", None):
+            log.warning("[YouTubeOAuth] Google no devolvio refresh_token")
+            return done("error")
+        _write_youtube_credentials(credentials, _youtube_credentials_file())
+        log.info("[YouTubeOAuth] Token de YouTube renovado desde dashboard")
+        return done("success")
+    except Exception as e:
+        log.error("[YouTubeOAuth] Error renovando token: %s", e)
+        return done("error")
 
 
 @app.get("/healthz")
@@ -941,6 +1128,10 @@ tbody tr:last-child td{border-bottom:none}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
         Subida manual
       </a>
+      <a class="nav-item" data-section="youtube" onclick="showSection('youtube',this)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        YouTube
+      </a>
       <a class="nav-item" data-section="logs" onclick="showSection('logs',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
         Logs
@@ -1114,6 +1305,25 @@ tbody tr:last-child td{border-bottom:none}
       </div>
     </div>
 
+    <!-- YOUTUBE -->
+    <div id="section-youtube" class="section">
+      <div class="card" style="max-width:720px">
+        <div class="card-header">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            Credenciales YouTube
+          </div>
+          <button class="btn small ghost" onclick="loadYouTubeOAuthStatus()">Refrescar</button>
+        </div>
+        <div id="youtube-oauth-status" class="table-wrap"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+          <button class="btn primary" id="youtube-oauth-btn" onclick="startYouTubeOAuth()">
+            Renovar token
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- LOGS -->
     <div id="section-logs" class="section">
       <div class="card">
@@ -1152,7 +1362,7 @@ tbody tr:last-child td{border-bottom:none}
 <div class="toast-container" id="toasts"></div>
 
 <script>
-const titles={overview:'Dashboard',vods:'VODs',queue:'Cola de descargas',manual:'Subida manual',logs:'Logs'};
+const titles={overview:'Dashboard',vods:'VODs',queue:'Cola de descargas',manual:'Subida manual',youtube:'YouTube',logs:'Logs'};
 let events=null;
 let fallbackInterval=null;
 let currentVodOffset=0;
@@ -1182,6 +1392,7 @@ function showSection(id,el){
   document.getElementById('sidebar').classList.remove('open');
   if(id==='vods') loadVods(0);
   if(id==='queue') lastState?renderQueue(lastState.queue||[]):loadQueue();
+  if(id==='youtube') loadYouTubeOAuthStatus();
   if(id==='logs') loadLogs();
 }
 
@@ -1494,6 +1705,50 @@ async function manualUpload(){
   }catch(e){toast(e.message,'error')}
 }
 
+function renderYouTubeOAuthStatus(d){
+  const box=document.getElementById('youtube-oauth-status');
+  const c=d.credentials||{};
+  const tokenState=!c.exists?'No existe':(c.error?'Invalido':(c.has_refresh_token?'Disponible':'Sin refresh token'));
+  const validState=c.valid?'Valido':(c.expired?'Caducado':'No validado');
+  const rows=[
+    ['OAuth client', d.client_secret_exists?d.client_secret_type:'No encontrado'],
+    ['Callback', d.redirect_uri||'-'],
+    ['Token', tokenState],
+    ['Estado', validState],
+    ['Actualizado', c.updated_at?c.updated_at.replace('T',' ').slice(0,19):'-'],
+  ];
+  box.innerHTML='<table><tbody>'+rows.map(r=>`<tr><td style="color:var(--text-dim);width:160px">${esc(r[0])}</td><td style="font-family:${r[0]==='Callback'?'JetBrains Mono, monospace':'inherit'};font-size:${r[0]==='Callback'?'12px':'inherit'}">${esc(r[1])}</td></tr>`).join('')+'</tbody></table>';
+  const btn=document.getElementById('youtube-oauth-btn');
+  if(btn){
+    btn.disabled=!d.ready;
+    btn.title=d.ready?'Renovar token de YouTube':'Requiere OAuth client Web application con la callback indicada';
+  }
+}
+
+async function loadYouTubeOAuthStatus(){
+  const box=document.getElementById('youtube-oauth-status');
+  box.innerHTML=skeletonRow()+skeletonRow();
+  try{
+    const d=await api('/api/youtube/oauth/status');
+    renderYouTubeOAuthStatus(d);
+  }catch(e){
+    box.innerHTML=emptyState('Error','No se pudo leer el estado de YouTube');
+    toast(e.message,'error');
+  }
+}
+
+async function startYouTubeOAuth(){
+  const btn=document.getElementById('youtube-oauth-btn');
+  try{
+    if(btn){btn.disabled=true;btn.textContent='Abriendo Google...'}
+    const d=await api('/api/youtube/oauth/start',{method:'POST'});
+    window.location=d.authorization_url;
+  }catch(e){
+    toast(e.message,'error');
+    if(btn){btn.disabled=false;btn.textContent='Renovar token'}
+  }
+}
+
 async function retryVod(vodId){
   try{await api(`/api/vods/${encodeURIComponent(vodId)}/retry`,{method:'POST'});toast('VOD reencolado');loadVods(currentVodOffset)}catch(e){toast(e.message,'error')}
 }
@@ -1598,6 +1853,12 @@ window.addEventListener('resize',()=>{const s=document.getElementById('section-o
     document.getElementById('userName').textContent=me.user;
     document.getElementById('userAvatar').textContent=me.user.charAt(0).toUpperCase();
   }catch(e){}
+  const params=new URLSearchParams(window.location.search);
+  const ytResult=params.get('youtube_oauth');
+  if(ytResult){
+    toast(ytResult==='success'?'Token de YouTube renovado':'No se pudo renovar YouTube',ytResult==='success'?'success':'error');
+    window.history.replaceState({},document.title,window.location.pathname);
+  }
   refreshAll();
   connectEvents();
 })();

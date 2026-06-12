@@ -36,6 +36,8 @@ class AutoPipeline:
         self.db = PipelineDB(self.config["monitoring"]["db_path"])
         self.monitor = VodMonitor(self.config, self.db)
         self.uploader = None
+        self.uploader_credentials_file = None
+        self.uploader_credentials_mtime = None
 
         # Workers / queue
         self.download_queue = queue.Queue()
@@ -51,12 +53,24 @@ class AutoPipeline:
         os.makedirs(self.config["download"]["output_folder"], exist_ok=True)
 
     def _get_uploader(self):
-        if self.uploader is None:
-            yt_cfg = self.config["youtube"]
+        yt_cfg = self.config["youtube"]
+        credentials_file = yt_cfg.get("credentials_file", "youtube_credentials.pkl")
+        try:
+            credentials_mtime = os.path.getmtime(credentials_file)
+        except OSError:
+            credentials_mtime = None
+
+        if (
+            self.uploader is None
+            or self.uploader_credentials_file != credentials_file
+            or self.uploader_credentials_mtime != credentials_mtime
+        ):
             self.uploader = YouTubeUploader(
                 yt_cfg["client_secrets_file"],
-                yt_cfg.get("credentials_file", "youtube_credentials.pkl")
+                credentials_file,
             )
+            self.uploader_credentials_file = credentials_file
+            self.uploader_credentials_mtime = credentials_mtime
         return self.uploader
 
     def _get_channel_config(self, channel: str):
@@ -498,6 +512,8 @@ class AutoPipeline:
                 log.info("[UploadWorker] Subida OK %s -> https://youtu.be/%s", vod_id, youtube_id)
 
             except YouTubeAuthError as e:
+                self.uploader = None
+                self.uploader_credentials_mtime = None
                 err = str(e)
                 DownloadProgress.fail(vod_id, err)
                 self.db.update_vod_status(vod_id, "failed", error=err, file_path=file_path)

@@ -15,6 +15,16 @@ Este error significa que `youtube_credentials.pkl` ya no sirve. No es un problem
 
 Si el pipeline detecta este caso, aparta el token anterior como `youtube_credentials.pkl.revoked` para que no se siga reintentando con una credencial rota.
 
+### Renovacion desde el dashboard
+
+El dashboard puede renovar `youtube_credentials.pkl` directamente en el VPS desde la seccion **YouTube**. Para usarlo, `client_secret.json` debe ser un OAuth Client de tipo **Web application** y tener autorizada esta callback:
+
+```
+https://TU_DOMINIO/api/youtube/oauth/callback
+```
+
+En produccion define tambien `DASHBOARD_PUBLIC_URL=https://TU_DOMINIO` en `.env` si el dashboard no puede inferir bien la URL publica desde nginx.
+
 ### Causa #1: Tu email no esta en "Test users" (90% de los casos)
 
 Si tu app esta en modo **Testing** (por defecto), SOLO los emails añadidos como "Test users" pueden autenticarse.
