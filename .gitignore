@@ -11,6 +11,8 @@ youtube_credentials.pkl
 twitch_cookies.txt
 *.cookie
 .env
+config.prod.local.json
+config.local.json
 
 # Logs y datos de proceso
 logs/

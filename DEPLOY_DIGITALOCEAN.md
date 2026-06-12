@@ -157,7 +157,7 @@ scp twitch_cookies.txt root@TU_IP:/opt/twitch-vod-auto/
 
 ---
 
-## 5. Configurar config.json en el servidor
+## 5. Configurar config.prod.local.json en el servidor
 
 Conectate al servidor:
 ```bash
@@ -165,14 +165,14 @@ ssh root@TU_IP
 cd /opt/twitch-vod-auto
 ```
 
-Copia la configuracion de produccion:
+Copia la configuracion de produccion local, que no se sube a Git:
 ```bash
-cp config.prod.json config.json
+cp config.prod.json config.prod.local.json
 ```
 
-Edita `config.json` con tus canales:
+Edita `config.prod.local.json` con tus canales:
 ```bash
-nano config.json   # o vim config.json
+nano config.prod.local.json   # o vim config.prod.local.json
 ```
 
 Cambia esto:
@@ -417,7 +417,7 @@ docker compose -f docker-compose.prod.yml restart pipeline
 
 ### "El pipeline dice 'cookies_file no encontrado'"
 - Asegurate de que `twitch_cookies.txt` este en `/opt/twitch-vod-auto/`
-- Verifica que `config.json` tenga: `"cookies_file": "twitch_cookies.txt"`
+- Verifica que `config.prod.local.json` tenga: `"cookies_file": "twitch_cookies.txt"`
 
 ### "502 Bad Gateway"
 - El dashboard no esta corriendo o no responde en el puerto 8080
@@ -432,7 +432,8 @@ docker compose -f docker-compose.prod.yml restart pipeline
 ├── client_secret.json           # Google Cloud (obligatorio)
 ├── youtube_credentials.pkl      # Token OAuth YouTube (obligatorio)
 ├── twitch_cookies.txt           # Cookies Twitch (obligatorio para VODs capados)
-├── config.json                  # Configuracion de canales y opciones
+├── config.prod.local.json       # Configuracion real de produccion (ignorada por Git)
+├── config.json                  # Configuracion versionada para desarrollo/local
 ├── .env                         # Variables de entorno
 ├── docker-compose.prod.yml      # Orquestacion Docker
 ├── nginx.conf                   # Reverse proxy + SSL

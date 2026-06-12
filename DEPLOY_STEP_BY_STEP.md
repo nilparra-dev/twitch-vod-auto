@@ -88,7 +88,7 @@ scp youtube_credentials.pkl "root@TU_IP:/opt/twitch-vod-auto/"
 
 ---
 
-## PASO 4: Configurar config.json
+## PASO 4: Configurar config.prod.local.json
 
 Conectate al servidor:
 ```bash
@@ -96,14 +96,14 @@ ssh root@TU_IP
 cd /opt/twitch-vod-auto
 ```
 
-Copia la config de produccion:
+Copia la config de produccion local, que no se sube a Git:
 ```bash
-cp config.prod.json config.json
+cp config.prod.json config.prod.local.json
 ```
 
 Edita el archivo:
 ```bash
-nano config.json
+nano config.prod.local.json
 ```
 
 **Cambia la seccion de canales**. Ejemplo con un canal real:
@@ -315,7 +315,7 @@ Probablemente el dashboard no levanto. Revisa los logs.
 
 ## Proximos pasos opcionales
 
-- **Renovar cookies**: Si quieres descargar VODs capados, exporta `twitch_cookies.txt` desde tu PC y subelo al servidor, luego edita `config.json` para poner `"cookies_file": "twitch_cookies.txt"`.
+- **Renovar cookies**: Si quieres descargar VODs capados, exporta `twitch_cookies.txt` desde tu PC y subelo al servidor, luego edita `config.prod.local.json` para poner `"cookies_file": "twitch_cookies.txt"`.
 - **Activar proxy naranja de Cloudflare**: Si quieres proteccion DDoS y ocultar la IP, en Cloudflare cambia el registro `vod` a **Proxied** (nube naranja). Nota: si activas esto, Let's Encrypt no podra renovar certificados automaticamente. Configura Cloudflare Origin CA o renueva manualmente cada 90 dias.
 - **Backup de la base de datos**: La DB esta en `data/pipeline.db`. Copiala periodicamente.
 

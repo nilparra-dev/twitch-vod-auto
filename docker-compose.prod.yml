@@ -14,7 +14,7 @@ services:
       - ./client_secret.json:/app/client_secret.json:ro
       - ./youtube_credentials.pkl:/app/youtube_credentials.pkl
       - ./twitch_cookies.txt:/app/twitch_cookies.txt:ro
-      - ./config.json:/app/config.json:ro
+      - ./config.prod.local.json:/app/config.json:ro
       - ./.env:/app/.env:ro
     environment:
       - CONFIG_PATH=/app/config.json
@@ -34,7 +34,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./config.json:/app/config.json:ro
+      - ./config.prod.local.json:/app/config.json:ro
     environment:
       - CONFIG_PATH=/app/config.json
       - PYTHONUNBUFFERED=1
@@ -52,7 +52,8 @@ services:
     container_name: twitch-vod-nginx
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certbot-data:/etc/letsencrypt:ro

@@ -415,7 +415,7 @@ class AutoPipeline:
         log.info("[Pipeline] Apagado completo.")
 
 if __name__ == "__main__":
-    pipeline = AutoPipeline()
+    pipeline = AutoPipeline(os.getenv("CONFIG_PATH", "config.json"))
     if len(sys.argv) > 1 and sys.argv[1] == "--once":
         pipeline.run_once()
     else:

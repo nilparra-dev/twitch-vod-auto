@@ -100,10 +100,12 @@ server {
 EOF
 fi
 
-# 7. Crear config.json base si no existe
-if [ ! -f "$PROJECT_DIR/config.json" ]; then
-    if [ -f "$PROJECT_DIR/config.prod.json" ]; then
-        cp $PROJECT_DIR/config.prod.json $PROJECT_DIR/config.json
+# 7. Crear config de produccion local si no existe
+if [ ! -f "$PROJECT_DIR/config.prod.local.json" ]; then
+    if [ -f "$PROJECT_DIR/config.json" ]; then
+        cp $PROJECT_DIR/config.json $PROJECT_DIR/config.prod.local.json
+    elif [ -f "$PROJECT_DIR/config.prod.json" ]; then
+        cp $PROJECT_DIR/config.prod.json $PROJECT_DIR/config.prod.local.json
     fi
 fi
 
@@ -140,7 +142,7 @@ echo ""
 echo "ARCHIVOS QUE DEBES SUBIR AHORA:"
 echo "  1. client_secret.json"
 echo "  2. youtube_credentials.pkl"
-echo "  3. config.json (editado con tus canales)"
+echo "  3. config.prod.local.json (editado con tus canales)"
 echo "  4. .env (opcional, con TWITCH_CLIENT_ID/SECRET)"
 echo ""
 echo "Despues de subir los archivos:"
