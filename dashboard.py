@@ -504,6 +504,7 @@ def api_youtube_oauth_start(request: Request, _: str = Depends(require_auth)):
     request.session["youtube_oauth_state"] = state
     request.session["youtube_oauth_redirect_uri"] = redirect_uri
     request.session["youtube_oauth_mode"] = mode
+    request.session["youtube_oauth_code_verifier"] = flow.code_verifier
     request.session["youtube_oauth_started_at"] = int(time.time())
     return {"authorization_url": authorization_url, "redirect_uri": redirect_uri, "mode": mode}
 
@@ -513,12 +514,15 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
     expected_state = request.session.get("youtube_oauth_state")
     redirect_uri = request.session.get("youtube_oauth_redirect_uri")
     mode = request.session.get("youtube_oauth_mode")
+    code_verifier = request.session.get("youtube_oauth_code_verifier")
     started_at = int(request.session.get("youtube_oauth_started_at") or 0)
 
     if mode != "installed" or not expected_state or not redirect_uri:
         raise HTTPException(400, "No hay una renovacion OAuth Desktop pendiente")
+    if not code_verifier:
+        raise HTTPException(400, "Falta code_verifier; inicia otra renovacion OAuth")
     if time.time() - started_at > 15 * 60:
-        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_started_at"):
+        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_code_verifier", "youtube_oauth_started_at"):
             request.session.pop(key, None)
         raise HTTPException(400, "La renovacion OAuth ha caducado; inicia otra")
 
@@ -536,6 +540,7 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
             scopes=SCOPES,
             state=expected_state,
             redirect_uri=redirect_uri,
+            code_verifier=code_verifier,
         )
         flow.fetch_token(code=code)
         credentials = flow.credentials
@@ -548,7 +553,7 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
         log.error("[YouTubeOAuth] Error completando OAuth Desktop: %s", e)
         raise HTTPException(400, f"No se pudo completar OAuth: {e}")
     finally:
-        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_started_at"):
+        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_code_verifier", "youtube_oauth_started_at"):
             request.session.pop(key, None)
 
 
@@ -562,14 +567,15 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
 
     expected_state = request.session.get("youtube_oauth_state")
     redirect_uri = request.session.get("youtube_oauth_redirect_uri")
+    code_verifier = request.session.get("youtube_oauth_code_verifier")
     started_at = int(request.session.get("youtube_oauth_started_at") or 0)
-    for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_started_at"):
+    for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_code_verifier", "youtube_oauth_started_at"):
         request.session.pop(key, None)
 
     if error:
         log.warning("[YouTubeOAuth] Google devolvio error: %s", error)
         return done("error")
-    if not code or not state or not expected_state or not redirect_uri:
+    if not code or not state or not expected_state or not redirect_uri or not code_verifier:
         log.warning("[YouTubeOAuth] Callback incompleto")
         return done("error")
     if not secrets.compare_digest(state, expected_state):
@@ -585,6 +591,7 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
             scopes=SCOPES,
             state=state,
             redirect_uri=redirect_uri,
+            code_verifier=code_verifier,
         )
         query = request.url.query
         authorization_response = f"{redirect_uri}?{query}" if query else redirect_uri
