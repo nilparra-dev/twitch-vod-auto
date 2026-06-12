@@ -189,6 +189,9 @@ def download_vod_auto(
                     total_size_mb=total_size_mb or None,
                     downloaded_mb=downloaded_mb,
                     elapsed_seconds=elapsed,
+                    stage="download",
+                    message="Descargando VOD",
+                    raw_line=line,
                 )
                 last_update = now
 

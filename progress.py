@@ -82,6 +82,8 @@ class DownloadProgress:
                     "channel": channel,
                     "video_id": video_id,
                     "status": "downloading",
+                    "stage": "download",
+                    "message": "Preparando descarga",
                     "percent": 0.0,
                     "speed": "",
                     "eta": "",
@@ -95,7 +97,8 @@ class DownloadProgress:
     @staticmethod
     def update(vod_id, percent=None, speed=None, eta=None, file_size_mb=None,
                total_size_mb=None, downloaded_mb=None, elapsed_seconds=None,
-               status=None):
+               status=None, stage=None, message=None, duration_seconds=None,
+               processed_seconds=None, encoded_mb=None, raw_line=None):
         """Actualiza el progreso de una descarga."""
         with _lock:
             with _process_lock():
@@ -106,6 +109,10 @@ class DownloadProgress:
                     data[vod_id]["percent"] = round(percent, 1)
                 if status is not None:
                     data[vod_id]["status"] = status
+                if stage is not None:
+                    data[vod_id]["stage"] = stage
+                if message is not None:
+                    data[vod_id]["message"] = message
                 if speed is not None:
                     data[vod_id]["speed"] = speed
                 if eta is not None:
@@ -118,6 +125,14 @@ class DownloadProgress:
                     data[vod_id]["downloaded_mb"] = round(downloaded_mb, 1)
                 if elapsed_seconds is not None:
                     data[vod_id]["elapsed_seconds"] = int(elapsed_seconds)
+                if duration_seconds is not None:
+                    data[vod_id]["duration_seconds"] = int(duration_seconds)
+                if processed_seconds is not None:
+                    data[vod_id]["processed_seconds"] = int(processed_seconds)
+                if encoded_mb is not None:
+                    data[vod_id]["encoded_mb"] = round(encoded_mb, 1)
+                if raw_line is not None:
+                    data[vod_id]["raw_line"] = str(raw_line)[-500:]
                 data[vod_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
                 DownloadProgress._write(data)
 
@@ -130,6 +145,8 @@ class DownloadProgress:
                 if vod_id not in data:
                     return
                 data[vod_id]["status"] = "completed"
+                data[vod_id]["stage"] = "completed"
+                data[vod_id]["message"] = "Archivo listo"
                 data[vod_id]["percent"] = 100.0
                 if file_size_mb:
                     data[vod_id]["file_size_mb"] = round(file_size_mb, 1)
@@ -146,6 +163,8 @@ class DownloadProgress:
                 if vod_id not in data:
                     return
                 data[vod_id]["status"] = "failed"
+                data[vod_id]["stage"] = "failed"
+                data[vod_id]["message"] = str(error)
                 data[vod_id]["error"] = str(error)
                 data[vod_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
                 DownloadProgress._write(data)

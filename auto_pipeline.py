@@ -116,20 +116,80 @@ class AutoPipeline:
             f"Subido automáticamente por twitch-vod-auto."
         )
 
+    def _media_tool(self, ffmpeg_folder: str, tool_name: str) -> str:
+        candidates = []
+        if os.name == "nt":
+            candidates.append(os.path.join(ffmpeg_folder, f"{tool_name}.exe"))
+        candidates.append(os.path.join(ffmpeg_folder, tool_name))
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return tool_name
+
+    def _probe_duration_seconds(self, ffprobe_exe: str, file_path: str) -> float:
+        cmd = [
+            ffprobe_exe,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                duration = float((result.stdout or "").strip())
+                return duration if duration > 0 else 0.0
+            log.warning("[Reencode] ffprobe rc=%s: %s", result.returncode, (result.stderr or "").strip()[:300])
+        except Exception as e:
+            log.warning("[Reencode] No se pudo obtener duracion con ffprobe: %s", e)
+        return 0.0
+
+    @staticmethod
+    def _parse_ffmpeg_time_seconds(progress: dict) -> float:
+        for key in ("out_time_us", "out_time_ms"):
+            value = progress.get(key)
+            if value and str(value).lstrip("-").isdigit():
+                return max(0.0, int(value) / 1_000_000)
+        out_time = progress.get("out_time")
+        if not out_time:
+            return 0.0
+        try:
+            hours, minutes, seconds = str(out_time).split(":")
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _format_eta(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def _speed_factor(speed: str) -> float:
+        try:
+            return float(str(speed).strip().rstrip("x"))
+        except Exception:
+            return 0.0
+
     def _reencode_for_youtube(self, file_path: str, vod_id: str) -> str:
         """Reencode el archivo a h264/aac + faststart para que YouTube lo procese siempre.
         Devuelve la ruta al nuevo archivo o None si falla (en cuyo caso se usa el original)."""
         try:
             download_cfg = self.config.get("download", {})
             ffmpeg_folder = os.path.abspath(download_cfg.get("ffmpeg_folder", "./bin"))
-            ffmpeg_exe = os.path.join(ffmpeg_folder, "ffmpeg")
-            if not os.path.exists(ffmpeg_exe):
-                ffmpeg_exe = "ffmpeg"
+            ffmpeg_exe = self._media_tool(ffmpeg_folder, "ffmpeg")
+            ffprobe_exe = self._media_tool(ffmpeg_folder, "ffprobe")
 
             src = Path(file_path)
             tmp = src.with_name(src.stem + "_yt.mp4")
             if tmp.exists():
                 tmp.unlink()
+
+            duration = self._probe_duration_seconds(ffprobe_exe, str(src))
 
             cmd = [
                 ffmpeg_exe, "-y", "-i", str(src),
@@ -141,26 +201,85 @@ class AutoPipeline:
             ]
 
             log.info("[Reencode] Iniciando: %s -> %s", src.name, tmp.name)
-            DownloadProgress.update(vod_id, status="encoding", percent=100.0)
+            if not DownloadProgress.get(vod_id):
+                DownloadProgress.start(vod_id, channel="", video_id="")
+            DownloadProgress.update(
+                vod_id,
+                status="encoding",
+                stage="encoding",
+                percent=0.0,
+                speed="",
+                eta="",
+                duration_seconds=duration or None,
+                processed_seconds=0,
+                encoded_mb=0,
+                message="Preparando reencode para YouTube",
+            )
             start = time.time()
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
+            last_update = 0
             last_pct_log = 0
+            ffmpeg_progress = {}
             for line in proc.stdout:
                 line = line.strip()
-                if line.startswith("out_time_ms="):
-                    # ffmpeg -progress emite out_time_ms=...; lo ignoramos, usamos size
+                if not line:
                     continue
-                if "size=" in line and ("speed=" in line or "time=" in line):
-                    pct_match = None
-                    if "time=" in line:
-                        # No tenemos duración total, mostramos progreso por tamaño
-                        pass
-                    # Loguear cada ~10s
-                    now = time.time()
-                    if now - last_pct_log > 10:
-                        log.info("[Reencode] %s: %s", src.name, line[:200])
-                        last_pct_log = now
+                if "=" not in line:
+                    log.info("[Reencode] %s", line[:300])
+                    continue
+
+                key, value = line.split("=", 1)
+                ffmpeg_progress[key.strip()] = value.strip()
+                now = time.time()
+                should_update = key == "progress" or now - last_update >= 2
+                if not should_update:
+                    continue
+
+                processed = self._parse_ffmpeg_time_seconds(ffmpeg_progress)
+                encoded_mb = 0.0
+                total_size = ffmpeg_progress.get("total_size")
+                if total_size and str(total_size).lstrip("-").isdigit():
+                    encoded_mb = max(0.0, int(total_size) / 1024 / 1024)
+
+                pct = 0.0
+                eta = ""
+                if duration:
+                    pct = min(99.0, max(0.0, processed / duration * 100))
+                    speed_factor = self._speed_factor(ffmpeg_progress.get("speed", ""))
+                    if speed_factor > 0 and processed > 0:
+                        eta = self._format_eta((duration - processed) / speed_factor)
+
+                elapsed = int(now - start)
+                raw = (
+                    f"out_time={ffmpeg_progress.get('out_time', '')} "
+                    f"speed={ffmpeg_progress.get('speed', '')} "
+                    f"size={encoded_mb:.1f}MB "
+                    f"progress={ffmpeg_progress.get('progress', '')}"
+                ).strip()
+                DownloadProgress.update(
+                    vod_id,
+                    status="encoding",
+                    stage="encoding",
+                    percent=pct,
+                    speed=ffmpeg_progress.get("speed", ""),
+                    eta=eta,
+                    elapsed_seconds=elapsed,
+                    duration_seconds=duration or None,
+                    processed_seconds=processed,
+                    encoded_mb=encoded_mb,
+                    file_size_mb=encoded_mb,
+                    message="Reencoding para YouTube",
+                    raw_line=raw,
+                )
+                last_update = now
+
+                if now - last_pct_log > 10:
+                    if duration:
+                        log.info("[Reencode] %s | %.1f%% | %s", src.name, pct, raw)
+                    else:
+                        log.info("[Reencode] %s | %s", src.name, raw)
+                    last_pct_log = now
 
             proc.wait()
             elapsed = int(time.time() - start)
@@ -177,16 +296,31 @@ class AutoPipeline:
                 DownloadProgress.update(
                     vod_id, percent=100.0,
                     file_size_mb=new_size, elapsed_seconds=elapsed,
+                    processed_seconds=duration or None,
+                    encoded_mb=new_size,
+                    message="Reencode completado",
                 )
                 return str(src)
             else:
                 log.error("[Reencode] Fallo rc=%s, size=%s", proc.returncode,
                           tmp.stat().st_size if tmp.exists() else 0)
+                DownloadProgress.update(
+                    vod_id,
+                    stage="encoding",
+                    message=f"Reencode fallido (rc={proc.returncode}); se usara el archivo original",
+                    raw_line=f"ffmpeg rc={proc.returncode}",
+                )
                 if tmp.exists():
                     tmp.unlink()
                 return None
         except Exception as e:
             log.error("[Reencode] Excepcion: %s", e)
+            DownloadProgress.update(
+                vod_id,
+                stage="encoding",
+                message=f"Reencode fallido; se usara el archivo original: {e}",
+                raw_line=str(e),
+            )
             return None
 
     def _download_worker(self):
@@ -234,6 +368,7 @@ class AutoPipeline:
                 if self.config.get("download", {}).get("reencode_for_youtube", True):
                     log.info("[DownloadWorker] Reencoding para YouTube...")
                     self.db.update_vod_status(vod_id, "encoding")
+                    self.db.mark_queue_status(vod_id, "encoding")
                     reencoded = self._reencode_for_youtube(file_path, vod_id)
                     if reencoded:
                         file_path = reencoded

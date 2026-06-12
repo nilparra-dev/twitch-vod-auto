@@ -359,7 +359,7 @@ class PipelineDB:
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) as queued,
-                    SUM(CASE WHEN status IN ('downloading', 'downloaded', 'uploading') THEN 1 ELSE 0 END) as downloading
+                    SUM(CASE WHEN status IN ('downloading', 'encoding', 'downloaded', 'uploading') THEN 1 ELSE 0 END) as downloading
                 FROM download_queue
             """).fetchone()
             return dict(row) if row else {"total": 0, "queued": 0, "downloading": 0}

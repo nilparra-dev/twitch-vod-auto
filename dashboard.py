@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import secrets
 import logging
@@ -9,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, Depends, HTTPException, Form, Query
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -230,13 +231,7 @@ def api_vod_delete(vod_id: str, _: str = Depends(require_auth)):
 
 @app.get("/api/queue")
 def api_queue(_: str = Depends(require_auth)):
-    db = get_db()
-    with db._connect() as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM download_queue ORDER BY created_at DESC LIMIT 100"
-        ).fetchall()
-    return {"queue": [dict(r) for r in rows]}
+    return {"queue": _queue_rows(limit=100)}
 
 
 @app.delete("/api/queue/{vod_id}")
@@ -262,6 +257,74 @@ def api_progress(_: str = Depends(require_auth)):
         if info.get("status") in ("downloading", "encoding"):
             active[vod_id] = info
     return {"active_downloads": active, "count": len(active)}
+
+
+def _queue_rows(limit: int = 100):
+    db = get_db()
+    with db._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM download_queue ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _active_progress():
+    DownloadProgress.cleanup_old(max_age_seconds=3600)
+    progress_data = DownloadProgress.get_all()
+    return {
+        vod_id: info
+        for vod_id, info in progress_data.items()
+        if info.get("status") in ("downloading", "encoding")
+    }
+
+
+def _dashboard_state():
+    db = get_db()
+    return {
+        "summary": db.get_summary_counts(),
+        "queue_summary": db.get_queue_summary(),
+        "channels": db.get_channels(),
+        "stats": db.get_stats(),
+        "recent_vods": db.get_vods(limit=10),
+        "activity": db.get_daily_activity(days=7),
+        "active_downloads": _active_progress(),
+        "queue": _queue_rows(limit=100),
+    }
+
+
+@app.get("/api/events")
+async def api_events(request: Request, _: str = Depends(require_auth)):
+    async def event_stream():
+        last_payload = None
+        last_keepalive = time.monotonic()
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                state = _dashboard_state()
+                payload = json.dumps(state, ensure_ascii=False, sort_keys=True, default=str)
+                if payload != last_payload:
+                    last_payload = payload
+                    last_keepalive = time.monotonic()
+                    yield f"event: state\ndata: {payload}\n\n"
+                elif time.monotonic() - last_keepalive > 15:
+                    last_keepalive = time.monotonic()
+                    yield ": keepalive\n\n"
+            except Exception as e:
+                err = json.dumps({"error": str(e)}, ensure_ascii=False)
+                yield f"event: error\ndata: {err}\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/progress/{vod_id}")
@@ -613,6 +676,12 @@ input,select,textarea{font-family:inherit}
 }
 .topbar h1{font-size:16px;font-weight:600;letter-spacing:-.2px}
 .topbar-actions{display:flex;align-items:center;gap:10px}
+.stream-pill{
+  display:flex;align-items:center;gap:7px;background:var(--surface-2);
+  border:1px solid var(--border-soft);color:var(--text-dim);
+  border-radius:999px;padding:6px 10px;font-size:12px;font-weight:500;
+}
+.stream-pill .status-dot{margin-right:0}
 .user-menu{
   display:flex;align-items:center;gap:8px;padding:5px 10px 5px 5px;
   background:var(--surface-2);border:1px solid var(--border);
@@ -707,8 +776,8 @@ tbody tr:last-child td{border-bottom:none}
 }
 .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .badge-pending{background:rgba(243,156,18,.12);color:#f5b041}
-.badge-downloading{background:rgba(52,152,219,.12);color:#5dade2}
-.badge-encoding{background:rgba(155,89,182,.15);color:#bb8fce}
+.badge-downloading,.badge-descargando{background:rgba(52,152,219,.12);color:#5dade2}
+.badge-encoding,.badge-reencoding{background:rgba(155,89,182,.15);color:#bb8fce}
 .badge-uploaded{background:rgba(46,204,113,.12);color:#58d68d}
 .badge-failed{background:rgba(231,76,60,.12);color:#ec7063}
 .badge-queued{background:rgba(139,143,163,.15);color:var(--text-dim)}
@@ -727,6 +796,15 @@ tbody tr:last-child td{border-bottom:none}
 .live-meta-item{display:flex;flex-direction:column;gap:2px}
 .live-meta-label{color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
 .live-meta-value{font-family:'JetBrains Mono',monospace;font-weight:500;font-size:13px}
+.live-message{
+  grid-column:1/-1;color:var(--text-dim);font-size:12px;
+  display:flex;flex-direction:column;gap:3px;min-width:0;
+}
+.live-message strong{color:var(--text);font-weight:600}
+.live-raw{
+  font-family:'JetBrains Mono',monospace;color:var(--text-muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 
 /* ===== Modal ===== */
 .modal-overlay{
@@ -885,13 +963,10 @@ tbody tr:last-child td{border-bottom:none}
       <h1 id="page-title">Dashboard</h1>
     </div>
     <div class="topbar-actions">
-      <select id="refresh-rate" class="select" onchange="setRefresh(this.value)">
-        <option value="0">Sin auto-refresh</option>
-        <option value="5">5s</option>
-        <option value="10" selected>10s</option>
-        <option value="30">30s</option>
-        <option value="60">1 min</option>
-      </select>
+      <div class="stream-pill" title="Actualizaciones en tiempo real">
+        <span class="status-dot online" id="streamDot"></span>
+        <span id="streamText">Tiempo real</span>
+      </div>
       <button class="btn ghost" onclick="refreshAll()" title="Refrescar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
       </button>
@@ -1078,10 +1153,15 @@ tbody tr:last-child td{border-bottom:none}
 
 <script>
 const titles={overview:'Dashboard',vods:'VODs',queue:'Cola de descargas',manual:'Subida manual',logs:'Logs'};
-let refreshInterval=null;
+let events=null;
+let fallbackInterval=null;
 let currentVodOffset=0;
 let currentUser='admin';
 let activeProgress={};
+let lastState=null;
+let lastVodsData=[];
+let lastVodsTotal=0;
+let lastActivityKey='';
 
 const SVG={ok:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',err:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'};
 
@@ -1101,14 +1181,8 @@ function showSection(id,el){
   document.getElementById('page-title').textContent=titles[id]||id;
   document.getElementById('sidebar').classList.remove('open');
   if(id==='vods') loadVods(0);
-  if(id==='queue') loadQueue();
+  if(id==='queue') lastState?renderQueue(lastState.queue||[]):loadQueue();
   if(id==='logs') loadLogs();
-}
-
-function setRefresh(seconds){
-  if(refreshInterval){clearInterval(refreshInterval);refreshInterval=null}
-  const s=parseInt(seconds);
-  if(s>0){refreshInterval=setInterval(refreshAll,s*1000)}
 }
 
 function refreshAll(){
@@ -1119,6 +1193,52 @@ function refreshAll(){
   if(qSec.classList.contains('active')) loadQueue();
   const lSec=document.getElementById('section-logs');
   if(lSec.classList.contains('active')) loadLogs();
+}
+
+function setRealtimeStatus(online,text){
+  const dot=document.getElementById('streamDot');
+  const label=document.getElementById('streamText');
+  if(dot){dot.classList.toggle('online',!!online);dot.classList.toggle('offline',!online)}
+  if(label) label.textContent=text;
+}
+
+function connectEvents(){
+  if(!window.EventSource){
+    setRealtimeStatus(false,'Fallback 10s');
+    fallbackInterval=setInterval(refreshAll,10000);
+    return;
+  }
+  events=new EventSource('/api/events');
+  events.addEventListener('open',()=>{
+    setRealtimeStatus(true,'Tiempo real');
+    if(fallbackInterval){clearInterval(fallbackInterval);fallbackInterval=null}
+  });
+  events.addEventListener('state',event=>{
+    try{applyState(JSON.parse(event.data))}
+    catch(e){console.error(e)}
+  });
+  events.addEventListener('error',()=>{
+    setRealtimeStatus(false,'Reconectando');
+  });
+}
+
+function applyState(state){
+  lastState=state;
+  activeProgress=state.active_downloads||{};
+  renderStats(state);
+  renderLiveDownloads();
+  const activityKey=JSON.stringify(state.activity||[]);
+  if(activityKey!==lastActivityKey){
+    lastActivityKey=activityKey;
+    renderActivityChart(state.activity||[]);
+  }
+  const qSec=document.getElementById('section-queue');
+  if(qSec.classList.contains('active')) renderQueue(state.queue||[]);
+  if(lastVodsData.length){
+    mergeRecentVods(state.recent_vods||[]);
+    const vSec=document.getElementById('section-vods');
+    if(vSec.classList.contains('active')) renderVodsTable(lastVodsData,lastVodsTotal,currentVodOffset);
+  }
 }
 
 async function api(path,opts={}){
@@ -1156,36 +1276,47 @@ function emptyState(msg,sub=''){
   return `<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg><div class="empty-text">${esc(msg)}</div>${sub?`<div class="empty-sub">${esc(sub)}</div>`:''}</div>`;
 }
 
+function renderStats(d){
+  if(!d||!d.summary) return;
+  document.getElementById('kpi-total').textContent=d.summary.total||0;
+  document.getElementById('kpi-uploaded').textContent=d.summary.uploaded||0;
+  document.getElementById('kpi-pending').textContent=(d.summary.pending||0)+(d.summary.downloading||0);
+  document.getElementById('kpi-failed').textContent=d.summary.failed||0;
+
+  const chSel=document.getElementById('vod-channel');
+  const known=new Set([...chSel.options].map(o=>o.value));
+  (d.channels||[]).forEach(c=>{
+    if(!known.has(c)){
+      const o=document.createElement('option');
+      o.value=c;o.textContent=c;chSel.appendChild(o);
+    }
+  });
+
+  const statsBox=document.getElementById('overview-stats');
+  if(!(d.stats||[]).length){statsBox.innerHTML=emptyState('Sin datos','Aun no hay estadisticas de canales')}
+  else{
+    statsBox.innerHTML='<div class="table-wrap"><table><thead><tr><th>Canal</th><th>Detectados</th><th>Subidos</th><th>Fallidos</th></tr></thead><tbody>'+
+      d.stats.map(s=>`<tr><td>${esc(s.channel)}</td><td>${Number(s.total_detected)||0}</td><td>${Number(s.total_uploaded)||0}</td><td>${Number(s.total_failed)||0}</td></tr>`).join('')+'</tbody></table></div>';
+  }
+
+  const vodsBox=document.getElementById('overview-vods');
+  const recent=(d.recent_vods||d.vods||[]).slice(0,6);
+  if(!recent.length){vodsBox.innerHTML=emptyState('Sin VODs','Los VODs apareceran aqui cuando se procesen')}
+  else{
+    vodsBox.innerHTML='<div class="table-wrap"><table><thead><tr><th>Canal</th><th>Estado</th><th>YouTube</th></tr></thead><tbody>'+
+      recent.map(v=>{
+        const progress=activeProgress[v.vod_id];
+        const status=progress?progress.status:v.status;
+        const yt=v.youtube_id?`<a href="https://youtu.be/${escAttr(v.youtube_id)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(v.youtube_id)}</a>`:'-';
+        return `<tr><td>${esc(v.channel)}</td><td>${badge(status)}</td><td>${yt}</td></tr>`;
+      }).join('')+'</tbody></table></div>';
+  }
+}
+
 async function loadStats(){
   try{
     const d=await api('/api/stats');
-    document.getElementById('kpi-total').textContent=d.summary.total||0;
-    document.getElementById('kpi-uploaded').textContent=d.summary.uploaded||0;
-    document.getElementById('kpi-pending').textContent=(d.summary.pending||0)+(d.summary.downloading||0);
-    document.getElementById('kpi-failed').textContent=d.summary.failed||0;
-
-    const chSel=document.getElementById('vod-channel');
-    if(chSel.options.length<=1){
-      d.channels.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;chSel.appendChild(o)});
-    }
-
-    const statsBox=document.getElementById('overview-stats');
-    if(!d.stats.length){statsBox.innerHTML=emptyState('Sin datos','Aun no hay estadisticas de canales')}
-    else{
-      statsBox.innerHTML='<div class="table-wrap"><table><thead><tr><th>Canal</th><th>Detectados</th><th>Subidos</th><th>Fallidos</th></tr></thead><tbody>'+
-        d.stats.map(s=>`<tr><td>${esc(s.channel)}</td><td>${Number(s.total_detected)||0}</td><td>${Number(s.total_uploaded)||0}</td><td>${Number(s.total_failed)||0}</td></tr>`).join('')+'</tbody></table></div>';
-    }
-
-    const vodsBox=document.getElementById('overview-vods');
-    const recent=d.vods?d.vods.slice(0,6):[];
-    if(!recent.length){vodsBox.innerHTML=emptyState('Sin VODs','Los VODs apareceran aqui cuando se procesen')}
-    else{
-      vodsBox.innerHTML='<div class="table-wrap"><table><thead><tr><th>Canal</th><th>Estado</th><th>YouTube</th></tr></thead><tbody>'+
-        recent.map(v=>{
-          const yt=v.youtube_id?`<a href="https://youtu.be/${escAttr(v.youtube_id)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(v.youtube_id)}</a>`:'-';
-          return `<tr><td>${esc(v.channel)}</td><td>${badge(v.status)}</td><td>${yt}</td></tr>`;
-        }).join('')+'</tbody></table></div>';
-    }
+    renderStats(d);
     loadActivityChart();
   }catch(e){console.error(e)}
 }
@@ -1213,17 +1344,22 @@ function renderLiveDownloads(){
     const statusLabel=p.status==='encoding'?'Reencoding':'Descargando';
     const totalMb=p.total_size_mb||0;
     const downMb=p.downloaded_mb||0;
-    const sizeInfo=totalMb?`${fmtBytes(downMb)} / ${fmtBytes(totalMb)}`:'-';
+    const sizeInfo=totalMb?`${fmtBytes(downMb)} / ${fmtBytes(totalMb)}`:(p.file_size_mb?fmtBytes(p.file_size_mb):'-');
+    const encodedInfo=p.status==='encoding'?fmtBytes(p.encoded_mb||p.file_size_mb||0):sizeInfo;
+    const timeInfo=p.duration_seconds?`${fmtSecs(p.processed_seconds||0)} / ${fmtSecs(p.duration_seconds)}`:(p.processed_seconds!=null?fmtSecs(p.processed_seconds):'-');
+    const message=p.message||statusLabel;
+    const raw=p.raw_line?`<span class="live-raw" title="${escAttr(p.raw_line)}">${esc(p.raw_line)}</span>`:'';
     const channel=p.channel||(String(p.vod_id||'').split('_')[0]||'').replace('video:','');
     return `<div class="live-item">
       <div class="live-name">${esc(channel)} ${badge(statusLabel)}</div>
       <div class="live-pct">${pct.toFixed(1)}%</div>
       <div class="live-bar"><div class="live-bar-fill" style="width:${pct}%"></div></div>
+      <div class="live-message"><strong>${esc(message)}</strong>${raw}</div>
       <div class="live-meta">
-        <div class="live-meta-item"><span class="live-meta-label">Tamano</span><span class="live-meta-value">${sizeInfo}</span></div>
+        <div class="live-meta-item"><span class="live-meta-label">${p.status==='encoding'?'Codificado':'Tamano'}</span><span class="live-meta-value">${encodedInfo}</span></div>
         <div class="live-meta-item"><span class="live-meta-label">Velocidad</span><span class="live-meta-value">${esc(p.speed||'-')}</span></div>
         <div class="live-meta-item"><span class="live-meta-label">ETA</span><span class="live-meta-value">${esc(p.eta||'-')}</span></div>
-        <div class="live-meta-item"><span class="live-meta-label">Transcurrido</span><span class="live-meta-value">${fmtSecs(p.elapsed_seconds)}</span></div>
+        <div class="live-meta-item"><span class="live-meta-label">${p.status==='encoding'?'Video':'Transcurrido'}</span><span class="live-meta-value">${p.status==='encoding'?timeInfo:fmtSecs(p.elapsed_seconds)}</span></div>
       </div>
     </div>`;
   }).join('');
@@ -1238,28 +1374,48 @@ async function loadVods(offset=0){
     const channel=document.getElementById('vod-channel').value;
     const search=document.getElementById('vod-search').value;
     const d=await api(`/api/vods?status=${encodeURIComponent(status)}&channel=${encodeURIComponent(channel)}&search=${encodeURIComponent(search)}&limit=25&offset=${offset}`);
-    if(!d.vods.length){box.innerHTML=emptyState('Sin resultados','Prueba a cambiar los filtros');return}
-    box.innerHTML='<div class="table-wrap"><table><thead><tr><th>VOD ID</th><th>Canal</th><th>Estado</th><th>Tamano</th><th>YouTube</th><th>Detectado</th><th></th></tr></thead><tbody>'+
-      d.vods.map(v=>{
-        const size=v.file_size_mb?fmtBytes(v.file_size_mb):'-';
-        const yt=v.youtube_id?`<a href="https://youtu.be/${escAttr(v.youtube_id)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(v.youtube_id)}</a>`:'-';
-        const detected=v.detected_at?v.detected_at.replace('T',' ').slice(0,16):'-';
-        const vodShort=String(v.vod_id).length>32?String(v.vod_id).slice(0,29)+'...':String(v.vod_id);
-        const progress=activeProgress[v.vod_id];
-        const pPct=progress?clampPct(progress.percent):0;
-        const sizeCell=progress?`<div style="min-width:120px"><div style="background:var(--bg);border-radius:4px;height:6px;overflow:hidden;border:1px solid var(--border-soft)"><div style="background:var(--accent);height:100%;width:${pPct}%;transition:width .5s"></div></div><div style="font-size:10px;color:var(--text-dim);margin-top:2px">${pPct.toFixed(1)}% &middot; ${esc(progress.speed||'')}</div></div>`:size;
-        let actions='';
-        if(v.status==='failed'||v.status==='pending') actions+=`<button class="btn small ghost" onclick="retryVod(${jsArg(v.vod_id)})" title="Reintentar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>`;
-        actions+=`<button class="btn small ghost" onclick="deleteVod(${jsArg(v.vod_id)})" title="Eliminar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
-        return `<tr><td title="${escAttr(v.vod_id)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(vodShort)}</td><td>${esc(v.channel)}</td><td>${badge(v.status)}</td><td>${sizeCell}</td><td>${yt}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${esc(detected)}</td><td><div style="display:flex;gap:4px">${actions}</div></td></tr>`;
-      }).join('')+'</tbody></table></div>';
-    const total=d.total;
-    const totalPages=Math.max(1,Math.ceil(total/25));
-    const curPage=Math.floor(offset/25)+1;
-    let pagHtml=`<button class="btn small" ${offset===0?'disabled':''} onclick="loadVods(${Math.max(0,offset-25)})">&laquo; Anterior</button><span>Pagina ${curPage} de ${totalPages} (${total} total)</span><button class="btn small" ${offset+25>=total?'disabled':''} onclick="loadVods(${offset+25})">Siguiente &raquo;</button>`;
-    document.getElementById('vods-pagination').innerHTML=pagHtml;
-    document.getElementById('badge-vods').textContent=total;document.getElementById('badge-vods').style.display='inline';
+    lastVodsData=d.vods||[];
+    lastVodsTotal=d.total||0;
+    renderVodsTable(lastVodsData,lastVodsTotal,offset);
   }catch(e){box.innerHTML=emptyState('Error','No se pudieron cargar los VODs');console.error(e)}
+}
+
+function mergeRecentVods(recent){
+  if(!recent||!recent.length||!lastVodsData.length) return;
+  const byId=new Map(recent.map(v=>[v.vod_id,v]));
+  lastVodsData=lastVodsData.map(v=>byId.has(v.vod_id)?{...v,...byId.get(v.vod_id)}:v);
+}
+
+function renderVodsTable(vods,total,offset=currentVodOffset){
+  const box=document.getElementById('vods-table');
+  if(!vods.length){
+    box.innerHTML=emptyState('Sin resultados','Prueba a cambiar los filtros');
+    document.getElementById('vods-pagination').innerHTML='';
+    document.getElementById('badge-vods').textContent=total||0;
+    document.getElementById('badge-vods').style.display=total?'inline':'none';
+    return;
+  }
+  box.innerHTML='<div class="table-wrap"><table><thead><tr><th>VOD ID</th><th>Canal</th><th>Estado</th><th>Tamano</th><th>YouTube</th><th>Detectado</th><th></th></tr></thead><tbody>'+
+    vods.map(v=>{
+      const progress=activeProgress[v.vod_id];
+      const rowStatus=progress?progress.status:v.status;
+      const size=v.file_size_mb?fmtBytes(v.file_size_mb):'-';
+      const yt=v.youtube_id?`<a href="https://youtu.be/${escAttr(v.youtube_id)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(v.youtube_id)}</a>`:'-';
+      const detected=v.detected_at?v.detected_at.replace('T',' ').slice(0,16):'-';
+      const vodShort=String(v.vod_id).length>32?String(v.vod_id).slice(0,29)+'...':String(v.vod_id);
+      const pPct=progress?clampPct(progress.percent):0;
+      const detail=progress?(progress.message||progress.speed||'En curso'):'';
+      const sizeCell=progress?`<div style="min-width:150px"><div style="background:var(--bg);border-radius:4px;height:6px;overflow:hidden;border:1px solid var(--border-soft)"><div style="background:var(--accent);height:100%;width:${pPct}%;transition:width .5s"></div></div><div style="font-size:10px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pPct.toFixed(1)}% &middot; ${esc(detail)}</div></div>`:size;
+      let actions='';
+      if(rowStatus==='failed'||rowStatus==='pending') actions+=`<button class="btn small ghost" onclick="retryVod(${jsArg(v.vod_id)})" title="Reintentar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>`;
+      actions+=`<button class="btn small ghost" onclick="deleteVod(${jsArg(v.vod_id)})" title="Eliminar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+      return `<tr><td title="${escAttr(v.vod_id)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(vodShort)}</td><td>${esc(v.channel)}</td><td>${badge(rowStatus)}</td><td>${sizeCell}</td><td>${yt}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${esc(detected)}</td><td><div style="display:flex;gap:4px">${actions}</div></td></tr>`;
+    }).join('')+'</tbody></table></div>';
+  const totalPages=Math.max(1,Math.ceil(total/25));
+  const curPage=Math.floor(offset/25)+1;
+  const pagHtml=`<button class="btn small" ${offset===0?'disabled':''} onclick="loadVods(${Math.max(0,offset-25)})">&laquo; Anterior</button><span>Pagina ${curPage} de ${totalPages} (${total} total)</span><button class="btn small" ${offset+25>=total?'disabled':''} onclick="loadVods(${offset+25})">Siguiente &raquo;</button>`;
+  document.getElementById('vods-pagination').innerHTML=pagHtml;
+  document.getElementById('badge-vods').textContent=total;document.getElementById('badge-vods').style.display='inline';
 }
 
 async function loadQueue(){
@@ -1267,16 +1423,27 @@ async function loadQueue(){
   box.innerHTML=skeletonRow()+skeletonRow();
   try{
     const d=await api('/api/queue');
-    if(!d.queue.length){box.innerHTML=emptyState('Cola vacia','Encola un VOD desde la seccion Subida manual');return}
-    box.innerHTML='<div class="table-wrap"><table><thead><tr><th>VOD ID</th><th>Canal</th><th>Estado</th><th>Intentos</th><th>Creado</th><th></th></tr></thead><tbody>'+
-      d.queue.map(q=>{
-        const vid=String(q.vod_id).length>32?String(q.vod_id).slice(0,29)+'...':String(q.vod_id);
-        const created=q.created_at?q.created_at.replace('T',' ').slice(0,16):'-';
-        return `<tr><td title="${escAttr(q.vod_id)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(vid)}</td><td>${esc(q.channel)}</td><td>${badge(q.status)}</td><td>${Number(q.attempts)||0}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${esc(created)}</td><td><button class="btn small ghost" onclick="deleteFromQueue(${jsArg(q.vod_id)})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button></td></tr>`;
-      }).join('')+'</tbody></table></div>';
-    const active=d.queue.filter(q=>q.status==='queued'||q.status==='downloading').length;
-    document.getElementById('badge-queue').textContent=active;document.getElementById('badge-queue').style.display=active?'inline':'none';
+    renderQueue(d.queue||[]);
   }catch(e){box.innerHTML=emptyState('Error','No se pudo cargar la cola');console.error(e)}
+}
+
+function renderQueue(queue){
+  const box=document.getElementById('queue-table');
+  if(!queue.length){
+    box.innerHTML=emptyState('Cola vacia','Encola un VOD desde la seccion Subida manual');
+    document.getElementById('badge-queue').style.display='none';
+    return;
+  }
+  box.innerHTML='<div class="table-wrap"><table><thead><tr><th>VOD ID</th><th>Canal</th><th>Estado</th><th>Intentos</th><th>Creado</th><th></th></tr></thead><tbody>'+
+    queue.map(q=>{
+      const progress=activeProgress[q.vod_id];
+      const status=progress?progress.status:q.status;
+      const vid=String(q.vod_id).length>32?String(q.vod_id).slice(0,29)+'...':String(q.vod_id);
+      const created=q.created_at?q.created_at.replace('T',' ').slice(0,16):'-';
+      return `<tr><td title="${escAttr(q.vod_id)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(vid)}</td><td>${esc(q.channel)}</td><td>${badge(status)}</td><td>${Number(q.attempts)||0}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">${esc(created)}</td><td><button class="btn small ghost" onclick="deleteFromQueue(${jsArg(q.vod_id)})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button></td></tr>`;
+    }).join('')+'</tbody></table></div>';
+  const active=queue.filter(q=>['queued','downloading','encoding','uploading'].includes(q.status)).length;
+  document.getElementById('badge-queue').textContent=active;document.getElementById('badge-queue').style.display=active?'inline':'none';
 }
 
 async function loadLogs(){
@@ -1377,50 +1544,46 @@ function showUserMenu(){
 async function loadActivityChart(){
   try{
     const d=await api('/api/activity?days=7');
-    const canvas=document.getElementById('activityChart');
-    if(!canvas) return;
-    const ctx=canvas.getContext('2d');
-    const w=canvas.parentElement.offsetWidth;
-    const h=canvas.parentElement.offsetHeight;
-    canvas.width=w;canvas.height=h;
-    const pad=40;const chartW=w-pad*2;const chartH=h-pad*2;
-    const data=d.activity||[];
-    if(!data.length){ctx.fillStyle='#5b5f73';ctx.font='13px Inter';ctx.textAlign='center';ctx.fillText('Sin datos en los ultimos 7 dias',w/2,h/2);return}
-    const maxVal=Math.max(...data.map(d=>d.total),1);
-    const barW=Math.max(20,(chartW/data.length)*0.6);
-    const gap=(chartW-(barW*data.length))/(data.length+1);
-    ctx.clearRect(0,0,w,h);
-    // Eje
-    ctx.strokeStyle='#262a39';ctx.lineWidth=1;
-    ctx.beginPath();ctx.moveTo(pad,pad);ctx.lineTo(pad,h-pad);ctx.lineTo(w-pad,h-pad);ctx.stroke();
-    // Barras
-    data.forEach((d,i)=>{
-      const x=pad+gap+i*(barW+gap);
-      const totalH=(d.total/maxVal)*chartH;
-      const upH=(d.uploaded/maxVal)*chartH;
-      const failH=(d.failed/maxVal)*chartH;
-      // Total (fondo)
-      ctx.fillStyle='#1d2030';
-      ctx.fillRect(x,h-pad-totalH,barW,totalH);
-      // Uploaded (verde)
-      ctx.fillStyle='#2ecc71';
-      ctx.fillRect(x,h-pad-upH,barW,upH);
-      // Failed (rojo)
-      ctx.fillStyle='#e74c3c';
-      ctx.fillRect(x,h-pad-upH-failH,barW,failH);
-      // Label
-      ctx.fillStyle='#8b8fa3';ctx.font='11px JetBrains Mono';ctx.textAlign='center';
-      ctx.fillText(d.day.slice(5),x+barW/2,h-pad+15);
-      ctx.fillStyle='#e4e6ef';ctx.font='11px Inter';
-      ctx.fillText(d.total,x+barW/2,h-pad-totalH-6);
-    });
-    // Leyenda
-    const legY=pad-15;
-    ctx.font='11px Inter';ctx.textAlign='left';
-    ctx.fillStyle='#2ecc71';ctx.fillRect(pad,legY,10,10);ctx.fillStyle='#e4e6ef';ctx.fillText('Subidos',pad+14,legY+9);
-    ctx.fillStyle='#e74c3c';ctx.fillRect(pad+80,legY,10,10);ctx.fillStyle='#e4e6ef';ctx.fillText('Fallidos',pad+94,legY+9);
-    ctx.fillStyle='#1d2030';ctx.fillRect(pad+160,legY,10,10);ctx.fillStyle='#e4e6ef';ctx.fillText('Total',pad+174,legY+9);
+    renderActivityChart(d.activity||[]);
   }catch(e){console.error(e)}
+}
+
+function renderActivityChart(data=[]){
+  const canvas=document.getElementById('activityChart');
+  if(!canvas) return;
+  const ctx=canvas.getContext('2d');
+  const w=canvas.parentElement.offsetWidth;
+  const h=canvas.parentElement.offsetHeight;
+  canvas.width=w;canvas.height=h;
+  const pad=40;const chartW=w-pad*2;const chartH=h-pad*2;
+  ctx.clearRect(0,0,w,h);
+  if(!data.length){ctx.fillStyle='#5b5f73';ctx.font='13px Inter';ctx.textAlign='center';ctx.fillText('Sin datos en los ultimos 7 dias',w/2,h/2);return}
+  const maxVal=Math.max(...data.map(d=>d.total),1);
+  const barW=Math.max(20,(chartW/data.length)*0.6);
+  const gap=(chartW-(barW*data.length))/(data.length+1);
+  ctx.strokeStyle='#262a39';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(pad,pad);ctx.lineTo(pad,h-pad);ctx.lineTo(w-pad,h-pad);ctx.stroke();
+  data.forEach((d,i)=>{
+    const x=pad+gap+i*(barW+gap);
+    const totalH=(d.total/maxVal)*chartH;
+    const upH=(d.uploaded/maxVal)*chartH;
+    const failH=(d.failed/maxVal)*chartH;
+    ctx.fillStyle='#1d2030';
+    ctx.fillRect(x,h-pad-totalH,barW,totalH);
+    ctx.fillStyle='#2ecc71';
+    ctx.fillRect(x,h-pad-upH,barW,upH);
+    ctx.fillStyle='#e74c3c';
+    ctx.fillRect(x,h-pad-upH-failH,barW,failH);
+    ctx.fillStyle='#8b8fa3';ctx.font='11px JetBrains Mono';ctx.textAlign='center';
+    ctx.fillText(d.day.slice(5),x+barW/2,h-pad+15);
+    ctx.fillStyle='#e4e6ef';ctx.font='11px Inter';
+    ctx.fillText(d.total,x+barW/2,h-pad-totalH-6);
+  });
+  const legY=pad-15;
+  ctx.font='11px Inter';ctx.textAlign='left';
+  ctx.fillStyle='#2ecc71';ctx.fillRect(pad,legY,10,10);ctx.fillStyle='#e4e6ef';ctx.fillText('Subidos',pad+14,legY+9);
+  ctx.fillStyle='#e74c3c';ctx.fillRect(pad+80,legY,10,10);ctx.fillStyle='#e4e6ef';ctx.fillText('Fallidos',pad+94,legY+9);
+  ctx.fillStyle='#1d2030';ctx.fillRect(pad+160,legY,10,10);ctx.fillStyle='#e4e6ef';ctx.fillText('Total',pad+174,legY+9);
 }
 
 window.addEventListener('resize',()=>{const s=document.getElementById('section-overview');if(s.classList.contains('active'))loadActivityChart()});
@@ -1434,7 +1597,7 @@ window.addEventListener('resize',()=>{const s=document.getElementById('section-o
     document.getElementById('userAvatar').textContent=me.user.charAt(0).toUpperCase();
   }catch(e){}
   refreshAll();
-  setRefresh(10);
+  connectEvents();
 })();
 </script>
 </body>
