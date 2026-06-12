@@ -10,6 +10,8 @@ from download_vod import (
     _channel_twitch_config,
     _dir_contents_for_log,
     _find_download_result,
+    _fragment_bases,
+    _fragment_count,
     _video_id_from_internal_vod_id,
 )
 from progress import DownloadProgress
@@ -73,6 +75,26 @@ class DownloadConfigTests(unittest.TestCase):
             path.write_bytes(b"abc")
 
             self.assertEqual(_dir_contents_for_log(Path(tmp)), ["vod.mp4 (0MB)"])
+
+    def test_dir_contents_for_log_prioritizes_current_video_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "zenrll_316913855460.mp4.part-Frag1").write_bytes(b"abc")
+            (folder / "trk511___315752637035.mp4.part-Frag1").write_bytes(b"abc")
+
+            contents = _dir_contents_for_log(folder, video_id="315752637035", output_stem="trk511___315752637035")
+
+            self.assertEqual(contents, ["trk511___315752637035.mp4.part-Frag1 (0MB)"])
+
+    def test_fragment_bases_groups_twitch_dlp_fragments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            expected = folder / "zenrll_316913855460.mp4"
+            for idx in (1, 2, 3):
+                (folder / f"zenrll_316913855460.mp4.part-Frag{idx}").write_bytes(b"abc")
+
+            self.assertEqual(_fragment_bases(expected, "316913855460"), [expected])
+            self.assertEqual(_fragment_count(expected), 3)
 
 
 class PipelineDBTests(unittest.TestCase):

@@ -101,11 +101,60 @@ def _find_download_result(output_path: Path, video_id: str = None, started_at: f
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def _dir_contents_for_log(parent: Path) -> list:
+def _fragment_bases(output_path: Path, video_id: str = None) -> list:
+    parent = output_path.parent
+    if not parent.exists():
+        return []
+
+    patterns = [f"{output_path.name}.part-Frag*", f"{output_path.stem}*.part-Frag*"]
+    if video_id and str(video_id).isdigit():
+        patterns.append(f"*{video_id}*.part-Frag*")
+
+    bases = {}
+    for pattern in patterns:
+        for fragment in parent.glob(pattern):
+            if not fragment.is_file() or ".part-Frag" not in fragment.name:
+                continue
+            base_name = fragment.name.split(".part-Frag", 1)[0]
+            base_path = parent / base_name
+            try:
+                stat = fragment.stat()
+            except OSError:
+                continue
+            item = bases.setdefault(str(base_path), {"path": base_path, "count": 0, "mtime": 0.0})
+            item["count"] += 1
+            item["mtime"] = max(item["mtime"], stat.st_mtime)
+
+    ordered = sorted(bases.values(), key=lambda item: (item["count"], item["mtime"]), reverse=True)
+    return [item["path"] for item in ordered]
+
+
+def _fragment_count(base_path: Path) -> int:
+    return len(list(base_path.parent.glob(base_path.name + ".part-Frag*")))
+
+
+def _dir_contents_for_log(parent: Path, video_id: str = None, output_stem: str = None) -> list:
+    files = [p for p in parent.iterdir() if p.is_file()]
+    relevant = []
+    if video_id:
+        relevant.extend([p for p in files if str(video_id) in p.name])
+    if output_stem:
+        relevant.extend([p for p in files if p.name.startswith(output_stem)])
+
+    selected = []
+    seen = set()
+    for p in relevant:
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            selected.append(p)
+
+    if not selected:
+        selected = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
     return [
         f"{p.name} ({p.stat().st_size // 1024 // 1024}MB)"
-        for p in parent.iterdir()
-        if p.is_file()
+        for p in selected
     ]
 
 
@@ -150,6 +199,75 @@ def _build_command(
     env = os.environ.copy()
     env["PATH"] = ffmpeg_folder + os.pathsep + env["PATH"]
     return cmd, env
+
+
+def _build_merge_command(base_path: Path, ffmpeg_folder: str, download_cfg: dict, is_windows: bool) -> tuple:
+    use_npx = download_cfg.get("use_npx", True)
+    git_bash = download_cfg.get("git_bash_path")
+    base = str(base_path)
+
+    if use_npx and git_bash and is_windows:
+        bash_cmd = (
+            f"export PATH=$PATH:{shlex.quote(ffmpeg_folder)} && "
+            f"npx twitch-dlp {shlex.quote(base)} --merge-fragments"
+        )
+        return [git_bash, "-c", bash_cmd], None
+
+    twitch_dlp_cmd = "twitch-dlp"
+    try:
+        subprocess.run([twitch_dlp_cmd, "--version"], capture_output=True, timeout=5)
+        base_args = []
+    except FileNotFoundError:
+        twitch_dlp_cmd = "npx"
+        base_args = ["twitch-dlp"]
+
+    cmd = [twitch_dlp_cmd] + base_args + [base, "--merge-fragments"]
+    env = os.environ.copy()
+    env["PATH"] = ffmpeg_folder + os.pathsep + env["PATH"]
+    return cmd, env
+
+
+def _try_merge_fragments(output_path: Path, video_id: str, ffmpeg_folder: str, download_cfg: dict, is_windows: bool) -> Path:
+    for base_path in _fragment_bases(output_path, video_id=video_id):
+        count = _fragment_count(base_path)
+        if count <= 0:
+            continue
+        log.info("[Download] Intentando merge de %d fragmentos existentes: %s", count, base_path)
+        cmd, env = _build_merge_command(base_path, ffmpeg_folder, download_cfg, is_windows)
+        popen_kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+        }
+        if env is not None:
+            popen_kwargs["env"] = env
+        if is_windows:
+            popen_kwargs["creationflags"] = 0x08000000
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        tail = []
+        for line in process.stdout:
+            line = line.rstrip()
+            if line.strip():
+                tail.append(line[:1000])
+                tail = tail[-10:]
+                lower_line = line.lower()
+                if any(kw in lower_line for kw in ["error", "warning", "merging", "ffmpeg", "download"]):
+                    log.info("[Download][Merge] %s", line[:500])
+        process.wait()
+
+        merged = _find_download_result(base_path, video_id=video_id)
+        if process.returncode == 0 and merged and merged.exists():
+            log.info("[Download] Merge de fragmentos OK: %s", merged)
+            return merged
+        log.warning(
+            "[Download] Merge de fragmentos fallo rc=%s para %s. Ultima salida: %s",
+            process.returncode,
+            base_path,
+            " || ".join(tail[-5:]),
+        )
+
+    return None
 
 
 def download_vod_auto(
@@ -325,7 +443,10 @@ def download_vod_auto(
 
     elapsed_total = int(time.time() - start_ts)
     elapsed_str = f"{elapsed_total//60:02d}:{elapsed_total%60:02d}"
-    if process.returncode == 0 and final_path and final_path.exists() and not error_lines:
+    if not final_path:
+        final_path = _try_merge_fragments(output_path, video_id, ffmpeg_folder, download_cfg, is_windows)
+
+    if final_path and final_path.exists():
         output_file = str(final_path)
         size_mb = get_file_size_mb(output_file)
         avg_speed = size_mb / max(elapsed_total, 1) * 60
@@ -346,7 +467,7 @@ def download_vod_auto(
         error_msg = f"Codigo de salida: {process.returncode}"
 
     try:
-        contents = _dir_contents_for_log(Path(output_file).parent)
+        contents = _dir_contents_for_log(Path(output_file).parent, video_id=video_id, output_stem=Path(output_file).stem)
         log.error("[Download] Error tras %s. %s. Dir: %s", elapsed_str, error_msg, ", ".join(contents[:20]))
         tail = " || ".join(output_tail[-10:])
         if tail:
