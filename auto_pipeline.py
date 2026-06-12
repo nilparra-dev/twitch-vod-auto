@@ -19,6 +19,8 @@ from progress import DownloadProgress
 from utils import setup_logging, sanitize_filename, get_file_size_mb
 
 log = logging.getLogger("pipeline")
+MIN_REUSABLE_DOWNLOAD_BYTES = 10 * 1024 * 1024
+REUSABLE_VIDEO_EXTENSIONS = {".mp4"}
 
 class AutoPipeline:
     def __init__(self, config_path: str = "config.json"):
@@ -80,6 +82,69 @@ class AutoPipeline:
         for k, v in overrides.items():
             global_yt[k] = v
         return global_yt
+
+    @staticmethod
+    def _is_reusable_video_file(path: Path) -> bool:
+        try:
+            return (
+                path.is_file()
+                and path.suffix.lower() in REUSABLE_VIDEO_EXTENSIONS
+                and path.stat().st_size > MIN_REUSABLE_DOWNLOAD_BYTES
+            )
+        except OSError:
+            return False
+
+    def _find_existing_download(self, output_filename: str, video_id: str = None) -> str:
+        download_cfg = self.config.get("download", {})
+        folder = Path(download_cfg.get("output_folder", "./downloads"))
+        if not folder.exists():
+            return None
+
+        exact = folder / output_filename
+        if self._is_reusable_video_file(exact):
+            return str(exact)
+
+        candidates = []
+        if video_id and str(video_id).isdigit():
+            for candidate in folder.glob(f"*{video_id}*.mp4"):
+                if self._is_reusable_video_file(candidate):
+                    candidates.append(candidate)
+
+        if not candidates:
+            return None
+
+        chosen = max(candidates, key=lambda p: p.stat().st_mtime)
+        log.info("[DownloadWorker] Archivo local existente encontrado para video_id=%s: %s", video_id, chosen)
+        return str(chosen)
+
+    def _cleanup_local_media(self, file_path: str, video_id: str = None, include_related: bool = False):
+        targets = []
+
+        def add(path):
+            if not path:
+                return
+            p = Path(path)
+            targets.append(p)
+            targets.append(p.with_suffix(".jpg"))
+
+        add(file_path)
+        if include_related and video_id and str(video_id).isdigit():
+            folder = Path(self.config.get("download", {}).get("output_folder", "./downloads"))
+            if folder.exists():
+                for pattern in (f"*{video_id}*.mp4", f"*{video_id}*.jpg"):
+                    targets.extend(folder.glob(pattern))
+
+        seen = set()
+        for target in targets:
+            try:
+                key = str(target.resolve(strict=False)).lower()
+                if key in seen or not target.is_file():
+                    continue
+                seen.add(key)
+                target.unlink()
+                log.info("[UploadWorker] Archivo local eliminado: %s", target)
+            except Exception as e:
+                log.warning("[UploadWorker] No se pudo eliminar %s: %s", target, e)
 
     def _parse_source_meta(self, source):
         if not source or not isinstance(source, str):
@@ -358,36 +423,31 @@ class AutoPipeline:
             safe_name = sanitize_filename(f"{channel}_{video_id}")
             output_filename = f"{safe_name}.mp4"
 
-            try:
-                file_path = download_vod_with_retry(
-                    vod_id,
-                    self.config,
-                    output_filename=output_filename,
-                    tracker_url=tracker_url,
-                    download_url=download_url,
-                    channel=channel,
-                    video_id=video_id,
-                )
-            except Exception as e:
-                err = f"Descarga fallida tras retries: {e}"
-                self.db.update_vod_status(vod_id, "failed", error=err)
-                self.db.mark_queue_status(vod_id, "failed", error=err)
-                self.db.increment_stat(channel, "failed")
-                log.error("[DownloadWorker] ERROR %s: %s", vod_id, err)
-                self.download_queue.task_done()
-                continue
+            file_path = self._find_existing_download(output_filename, video_id)
+            if file_path:
+                log.info("[DownloadWorker] Saltando descarga; se reutiliza archivo local: %s", file_path)
+            else:
+                try:
+                    file_path = download_vod_with_retry(
+                        vod_id,
+                        self.config,
+                        output_filename=output_filename,
+                        tracker_url=tracker_url,
+                        download_url=download_url,
+                        channel=channel,
+                        video_id=video_id,
+                    )
+                except Exception as e:
+                    err = f"Descarga fallida tras retries: {e}"
+                    self.db.update_vod_status(vod_id, "failed", error=err)
+                    self.db.mark_queue_status(vod_id, "failed", error=err)
+                    self.db.increment_stat(channel, "failed")
+                    log.error("[DownloadWorker] ERROR %s: %s", vod_id, err)
+                    self.download_queue.task_done()
+                    continue
 
             if file_path and os.path.exists(file_path):
-                # El MP4 que entrega twitch-dlp normalmente ya es apto para YouTube.
-                if self.config.get("download", {}).get("reencode_for_youtube", False):
-                    log.info("[DownloadWorker] Reencoding para YouTube...")
-                    self.db.update_vod_status(vod_id, "encoding")
-                    self.db.mark_queue_status(vod_id, "encoding")
-                    reencoded = self._reencode_for_youtube(file_path, vod_id)
-                    if reencoded:
-                        file_path = reencoded
-                else:
-                    log.info("[DownloadWorker] Reencode omitido; se subira el MP4 descargado.")
+                log.info("[DownloadWorker] Reencode deshabilitado; se subira el archivo local tal cual.")
 
                 size_mb = get_file_size_mb(file_path)
                 DownloadProgress.complete(vod_id, file_size_mb=size_mb)
@@ -531,22 +591,14 @@ class AutoPipeline:
                 traceback.print_exc()
 
             finally:
-                cleanup_after_upload = self.config.get("download", {}).get("cleanup_after_upload", True)
                 cleanup_failed_uploads = self.config.get("download", {}).get("cleanup_failed_uploads", False)
-                should_cleanup = (uploaded and cleanup_after_upload) or ((not uploaded) and cleanup_failed_uploads)
-                if should_cleanup and os.path.exists(file_path):
-                    try:
-                        os.remove(file_path)
-                        log.info("[UploadWorker] Archivo local eliminado: %s", file_path)
-                    except Exception as e:
-                        log.warning("[UploadWorker] No se pudo eliminar %s: %s", file_path, e)
-                # Eliminar thumbnail tambien
-                thumb = str(Path(file_path).with_suffix(".jpg"))
-                if should_cleanup and os.path.exists(thumb):
-                    try:
-                        os.remove(thumb)
-                    except Exception:
-                        pass
+                should_cleanup = uploaded or ((not uploaded) and cleanup_failed_uploads)
+                if should_cleanup:
+                    self._cleanup_local_media(
+                        file_path,
+                        video_id=item.get("video_id"),
+                        include_related=uploaded,
+                    )
 
             self.upload_queue.task_done()
 

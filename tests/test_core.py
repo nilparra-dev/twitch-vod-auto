@@ -1,7 +1,9 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
+from auto_pipeline import AutoPipeline
 import progress
 from db import PipelineDB
 from download_vod import _channel_twitch_config, _video_id_from_internal_vod_id
@@ -127,6 +129,42 @@ class YouTubeUploaderTests(unittest.TestCase):
 
         self.assertTrue(YouTubeUploader._is_invalid_grant(exc))
         self.assertFalse(YouTubeUploader._is_invalid_grant(RuntimeError("temporarily unavailable")))
+
+
+class AutoPipelineFileHandlingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.pipeline = AutoPipeline.__new__(AutoPipeline)
+        self.pipeline.config = {"download": {"output_folder": self.tmp.name}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_video(self, name: str):
+        path = Path(self.tmp.name) / name
+        with open(path, "wb") as f:
+            f.seek(11 * 1024 * 1024)
+            f.write(b"\0")
+        return path
+
+    def test_find_existing_download_by_video_id(self):
+        existing = self._make_video("zenrll_316944858596.mp4")
+
+        found = self.pipeline._find_existing_download("manual_316944858596.mp4", "316944858596")
+
+        self.assertEqual(Path(found), existing)
+
+    def test_cleanup_uploaded_media_removes_related_files(self):
+        uploaded = self._make_video("manual_316944858596.mp4")
+        related = self._make_video("zenrll_316944858596.mp4")
+        thumb = Path(self.tmp.name) / "zenrll_316944858596.jpg"
+        thumb.write_bytes(b"jpg")
+
+        self.pipeline._cleanup_local_media(str(uploaded), "316944858596", include_related=True)
+
+        self.assertFalse(uploaded.exists())
+        self.assertFalse(related.exists())
+        self.assertFalse(thumb.exists())
 
 
 if __name__ == "__main__":
