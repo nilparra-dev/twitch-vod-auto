@@ -6,7 +6,12 @@ from pathlib import Path
 from auto_pipeline import AutoPipeline
 import progress
 from db import PipelineDB
-from download_vod import _channel_twitch_config, _video_id_from_internal_vod_id
+from download_vod import (
+    _channel_twitch_config,
+    _dir_contents_for_log,
+    _find_download_result,
+    _video_id_from_internal_vod_id,
+)
 from progress import DownloadProgress
 from utils import parse_twitch_vod_url
 from youtube_uploader import YouTubeUploader
@@ -50,6 +55,24 @@ class DownloadConfigTests(unittest.TestCase):
             "123456",
         )
         self.assertEqual(_video_id_from_internal_vod_id("not-internal"), "")
+
+    def test_find_download_result_accepts_alternate_twitch_dlp_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            expected = folder / "trk511___315752637035.mp4"
+            actual = folder / "trk511___315752637035-315752637035.mp4"
+            with open(actual, "wb") as f:
+                f.seek(2 * 1024 * 1024)
+                f.write(b"\0")
+
+            self.assertEqual(_find_download_result(expected, "315752637035"), actual)
+
+    def test_dir_contents_for_log_uses_file_variable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vod.mp4"
+            path.write_bytes(b"abc")
+
+            self.assertEqual(_dir_contents_for_log(Path(tmp)), ["vod.mp4 (0MB)"])
 
 
 class PipelineDBTests(unittest.TestCase):

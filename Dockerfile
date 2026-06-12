@@ -16,9 +16,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Instalar ffmpeg, git y Node.js 22 para twitch-dlp
+# Instalar ffmpeg, git, Chromium y Node.js 22 para twitch-dlp
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    chromium \
     curl \
     ffmpeg \
     git \
