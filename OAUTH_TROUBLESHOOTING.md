@@ -4,6 +4,17 @@ Este error aparece cuando Google rechaza la autenticacion OAuth. Es super comun 
 
 ## Causas y Soluciones
 
+### Error `invalid_grant: Token has been expired or revoked`
+
+Este error significa que `youtube_credentials.pkl` ya no sirve. No es un problema del video ni del tamano del archivo: Google ha caducado o revocado el refresh token.
+
+1. Ejecuta `python youtube_uploader.py` en una maquina con navegador.
+2. Acepta de nuevo el permiso de subida de YouTube.
+3. Copia el nuevo `youtube_credentials.pkl` al servidor si el pipeline corre en Docker/VPS.
+4. Vuelve a lanzar la subida.
+
+Si el pipeline detecta este caso, aparta el token anterior como `youtube_credentials.pkl.revoked` para que no se siga reintentando con una credencial rota.
+
 ### Causa #1: Tu email no esta en "Test users" (90% de los casos)
 
 Si tu app esta en modo **Testing** (por defecto), SOLO los emails añadidos como "Test users" pueden autenticarse.

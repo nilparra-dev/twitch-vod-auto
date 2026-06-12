@@ -13,7 +13,7 @@ from pathlib import Path
 from db import PipelineDB
 from monitor import VodMonitor
 from download_vod import download_vod_with_retry
-from youtube_uploader import YouTubeUploader
+from youtube_uploader import YouTubeAuthError, YouTubeUploader
 from thumbnail import ThumbnailGenerator
 from progress import DownloadProgress
 from utils import setup_logging, sanitize_filename, get_file_size_mb
@@ -364,14 +364,16 @@ class AutoPipeline:
                 continue
 
             if file_path and os.path.exists(file_path):
-                # Reencode a h264/aac para que YouTube lo procese siempre bien
-                if self.config.get("download", {}).get("reencode_for_youtube", True):
+                # El MP4 que entrega twitch-dlp normalmente ya es apto para YouTube.
+                if self.config.get("download", {}).get("reencode_for_youtube", False):
                     log.info("[DownloadWorker] Reencoding para YouTube...")
                     self.db.update_vod_status(vod_id, "encoding")
                     self.db.mark_queue_status(vod_id, "encoding")
                     reencoded = self._reencode_for_youtube(file_path, vod_id)
                     if reencoded:
                         file_path = reencoded
+                else:
+                    log.info("[DownloadWorker] Reencode omitido; se subira el MP4 descargado.")
 
                 size_mb = get_file_size_mb(file_path)
                 DownloadProgress.complete(vod_id, file_size_mb=size_mb)
@@ -428,6 +430,53 @@ class AutoPipeline:
                 if not os.path.exists(thumb_path):
                     thumb_path = None
 
+                file_size_mb = get_file_size_mb(file_path)
+                if not DownloadProgress.get(vod_id):
+                    DownloadProgress.start(vod_id, channel=channel, video_id=item["video_id"])
+                DownloadProgress.update(
+                    vod_id,
+                    status="uploading",
+                    stage="upload",
+                    percent=0.0,
+                    file_size_mb=file_size_mb,
+                    total_size_mb=file_size_mb,
+                    downloaded_mb=0.0,
+                    speed="",
+                    eta="",
+                    message="Subiendo a YouTube",
+                )
+                upload_started = time.time()
+                last_upload_progress = 0
+
+                def on_upload_progress(percent, uploaded_mb, total_mb):
+                    nonlocal last_upload_progress
+                    now = time.time()
+                    if percent < 100.0 and now - last_upload_progress < 2:
+                        return
+                    elapsed = int(now - upload_started)
+                    speed = ""
+                    eta = ""
+                    if elapsed > 0 and uploaded_mb > 0:
+                        mb_per_sec = uploaded_mb / elapsed
+                        speed = f"{mb_per_sec:.1f} MB/s"
+                        if mb_per_sec > 0:
+                            eta = self._format_eta((total_mb - uploaded_mb) / mb_per_sec)
+                    DownloadProgress.update(
+                        vod_id,
+                        status="uploading",
+                        stage="upload",
+                        percent=percent,
+                        file_size_mb=total_mb,
+                        total_size_mb=total_mb,
+                        downloaded_mb=uploaded_mb,
+                        speed=speed,
+                        eta=eta,
+                        elapsed_seconds=elapsed,
+                        message="Subiendo a YouTube",
+                        raw_line=f"uploaded={uploaded_mb:.1f}MB/{total_mb:.1f}MB",
+                    )
+                    last_upload_progress = now
+
                 response = self._get_uploader().upload_video(
                     file_path=file_path,
                     title=title,
@@ -436,6 +485,8 @@ class AutoPipeline:
                     category_id=yt_cfg.get("category_id", self.config["youtube"]["default_category_id"]),
                     privacy_status=yt_cfg.get("privacy_status", self.config["youtube"]["default_privacy_status"]),
                     thumbnail_path=thumb_path,
+                    chunk_size_mb=yt_cfg.get("upload_chunk_size_mb", 64),
+                    progress_callback=on_upload_progress,
                 )
 
                 youtube_id = response["id"]
@@ -443,10 +494,20 @@ class AutoPipeline:
                 self.db.mark_queue_status(vod_id, "completed")
                 self.db.increment_stat(channel, "uploaded")
                 uploaded = True
+                DownloadProgress.complete(vod_id, file_size_mb=file_size_mb)
                 log.info("[UploadWorker] Subida OK %s -> https://youtu.be/%s", vod_id, youtube_id)
+
+            except YouTubeAuthError as e:
+                err = str(e)
+                DownloadProgress.fail(vod_id, err)
+                self.db.update_vod_status(vod_id, "failed", error=err, file_path=file_path)
+                self.db.mark_queue_status(vod_id, "failed", error=err)
+                self.db.increment_stat(channel, "failed")
+                log.error("[UploadWorker] ERROR OAuth YouTube %s: %s", vod_id, err)
 
             except Exception as e:
                 err = str(e)
+                DownloadProgress.fail(vod_id, err)
                 self.db.update_vod_status(vod_id, "failed", error=err, file_path=file_path)
                 self.db.mark_queue_status(vod_id, "failed", error=err)
                 self.db.increment_stat(channel, "failed")

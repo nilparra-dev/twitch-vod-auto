@@ -24,6 +24,7 @@
   "youtube": {
     "client_secrets_file": "client_secret.json",
     "credentials_file": "youtube_credentials.pkl",
+    "upload_chunk_size_mb": 64,
     "default_privacy_status": "private",
     "default_tags": ["twitch", "vod", "stream"],
     "default_category_id": "20",
@@ -34,7 +35,7 @@
     "ffmpeg_folder": "./bin",
     "git_bash_path": null,
     "use_npx": true,
-    "reencode_for_youtube": true,
+    "reencode_for_youtube": false,
     "cleanup_after_upload": true,
     "cleanup_failed_uploads": false,
     "max_concurrent_downloads": 2

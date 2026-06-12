@@ -7,6 +7,7 @@ from db import PipelineDB
 from download_vod import _channel_twitch_config, _video_id_from_internal_vod_id
 from progress import DownloadProgress
 from utils import parse_twitch_vod_url
+from youtube_uploader import YouTubeUploader
 
 
 class UrlParsingTests(unittest.TestCase):
@@ -113,6 +114,19 @@ class ProgressTests(unittest.TestCase):
 
         DownloadProgress.clear("vod1")
         self.assertIsNone(DownloadProgress.get("vod1"))
+
+
+class YouTubeUploaderTests(unittest.TestCase):
+    def test_chunk_size_is_clamped_and_aligned(self):
+        self.assertEqual(YouTubeUploader._chunk_size_bytes(64), 64 * 1024 * 1024)
+        self.assertEqual(YouTubeUploader._chunk_size_bytes(0), 1 * 1024 * 1024)
+        self.assertEqual(YouTubeUploader._chunk_size_bytes(999), 256 * 1024 * 1024)
+
+    def test_invalid_grant_detection(self):
+        exc = RuntimeError("invalid_grant: Token has been expired or revoked.")
+
+        self.assertTrue(YouTubeUploader._is_invalid_grant(exc))
+        self.assertFalse(YouTubeUploader._is_invalid_grant(RuntimeError("temporarily unavailable")))
 
 
 if __name__ == "__main__":

@@ -254,7 +254,7 @@ def api_progress(_: str = Depends(require_auth)):
     progress_data = DownloadProgress.get_all()
     active = {}
     for vod_id, info in progress_data.items():
-        if info.get("status") in ("downloading", "encoding"):
+        if info.get("status") in ("downloading", "encoding", "uploading"):
             active[vod_id] = info
     return {"active_downloads": active, "count": len(active)}
 
@@ -276,7 +276,7 @@ def _active_progress():
     return {
         vod_id: info
         for vod_id, info in progress_data.items()
-        if info.get("status") in ("downloading", "encoding")
+        if info.get("status") in ("downloading", "encoding", "uploading")
     }
 
 
@@ -1341,11 +1341,13 @@ function renderLiveDownloads(){
   updEl.textContent='Actualizado '+new Date().toLocaleTimeString();
   body.innerHTML=items.map(p=>{
     const pct=clampPct(p.percent);
-    const statusLabel=p.status==='encoding'?'Reencoding':'Descargando';
+    const isEncoding=p.status==='encoding';
+    const isUpload=p.status==='uploading'||p.stage==='upload';
+    const statusLabel=isEncoding?'Reencoding':(isUpload?'Subiendo':'Descargando');
     const totalMb=p.total_size_mb||0;
     const downMb=p.downloaded_mb||0;
     const sizeInfo=totalMb?`${fmtBytes(downMb)} / ${fmtBytes(totalMb)}`:(p.file_size_mb?fmtBytes(p.file_size_mb):'-');
-    const encodedInfo=p.status==='encoding'?fmtBytes(p.encoded_mb||p.file_size_mb||0):sizeInfo;
+    const encodedInfo=isEncoding?fmtBytes(p.encoded_mb||p.file_size_mb||0):sizeInfo;
     const timeInfo=p.duration_seconds?`${fmtSecs(p.processed_seconds||0)} / ${fmtSecs(p.duration_seconds)}`:(p.processed_seconds!=null?fmtSecs(p.processed_seconds):'-');
     const message=p.message||statusLabel;
     const raw=p.raw_line?`<span class="live-raw" title="${escAttr(p.raw_line)}">${esc(p.raw_line)}</span>`:'';
@@ -1356,10 +1358,10 @@ function renderLiveDownloads(){
       <div class="live-bar"><div class="live-bar-fill" style="width:${pct}%"></div></div>
       <div class="live-message"><strong>${esc(message)}</strong>${raw}</div>
       <div class="live-meta">
-        <div class="live-meta-item"><span class="live-meta-label">${p.status==='encoding'?'Codificado':'Tamano'}</span><span class="live-meta-value">${encodedInfo}</span></div>
+        <div class="live-meta-item"><span class="live-meta-label">${isEncoding?'Codificado':(isUpload?'Subido':'Tamano')}</span><span class="live-meta-value">${encodedInfo}</span></div>
         <div class="live-meta-item"><span class="live-meta-label">Velocidad</span><span class="live-meta-value">${esc(p.speed||'-')}</span></div>
         <div class="live-meta-item"><span class="live-meta-label">ETA</span><span class="live-meta-value">${esc(p.eta||'-')}</span></div>
-        <div class="live-meta-item"><span class="live-meta-label">${p.status==='encoding'?'Video':'Transcurrido'}</span><span class="live-meta-value">${p.status==='encoding'?timeInfo:fmtSecs(p.elapsed_seconds)}</span></div>
+        <div class="live-meta-item"><span class="live-meta-label">${isEncoding?'Video':'Transcurrido'}</span><span class="live-meta-value">${isEncoding?timeInfo:fmtSecs(p.elapsed_seconds)}</span></div>
       </div>
     </div>`;
   }).join('');
