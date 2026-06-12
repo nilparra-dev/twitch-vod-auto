@@ -111,5 +111,6 @@ jobs:
 
           mkdir -p data logs downloads certbot-data certbot-www secrets
           docker compose -f docker-compose.prod.yml up --build -d --remove-orphans
+          docker compose -f docker-compose.prod.yml restart nginx
           docker compose -f docker-compose.prod.yml ps
           EOF
