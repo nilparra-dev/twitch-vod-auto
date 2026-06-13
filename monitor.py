@@ -1,15 +1,16 @@
-import requests
-from bs4 import BeautifulSoup
+import concurrent.futures
+import logging
 import re
 import time
-import logging
-import concurrent.futures
-from datetime import datetime, timezone
-from urllib.parse import urljoin
-from utils import merge_config
+from datetime import UTC, datetime
+
+import requests
+from bs4 import BeautifulSoup
+
 from twitch_api import TwitchAPIClient
 
 log = logging.getLogger("monitor")
+
 
 class VodMonitor:
     def __init__(self, config, db):
@@ -34,18 +35,20 @@ class VodMonitor:
                 self.twitch_client = None
 
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+            }
+        )
 
         # Proxy support
         proxy = config.get("proxy")
@@ -99,22 +102,24 @@ class VodMonitor:
             try:
                 dt_str = f"{date_text} {time_text}"
                 dt = datetime.strptime(dt_str, "%b %d, %Y %H:%M")
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
                 start_timestamp = int(dt.timestamp())
             except ValueError:
                 start_timestamp = self._approx_timestamp_from_video_id(video_id)
 
             vod_id = f"video:{channel}_{video_id}_{start_timestamp}"
             tracker_url = f"https://twitchtracker.com/{channel}/streams/{video_id}"
-            streams.append({
-                "vod_id": vod_id,
-                "video_id": video_id,
-                "source": "twitchtracker",
-                "start_time": start_timestamp,
-                "channel": channel,
-                "tracker_url": tracker_url,
-                "download_url": f"https://www.twitch.tv/videos/{video_id}",
-            })
+            streams.append(
+                {
+                    "vod_id": vod_id,
+                    "video_id": video_id,
+                    "source": "twitchtracker",
+                    "start_time": start_timestamp,
+                    "channel": channel,
+                    "tracker_url": tracker_url,
+                    "download_url": f"https://www.twitch.tv/videos/{video_id}",
+                }
+            )
 
         log.info("[TT] %s -> %d streams", channel, len(streams))
         return streams
@@ -148,15 +153,17 @@ class VodMonitor:
 
             vod_id = f"video:{channel}_{video_id}_{start_timestamp}"
             tracker_url = f"https://streamscharts.com/channels/{channel}/streams/{video_id}"
-            streams.append({
-                "vod_id": vod_id,
-                "video_id": video_id,
-                "source": "streamscharts",
-                "start_time": start_timestamp,
-                "channel": channel,
-                "tracker_url": tracker_url,
-                "download_url": f"https://www.twitch.tv/videos/{video_id}",
-            })
+            streams.append(
+                {
+                    "vod_id": vod_id,
+                    "video_id": video_id,
+                    "source": "streamscharts",
+                    "start_time": start_timestamp,
+                    "channel": channel,
+                    "tracker_url": tracker_url,
+                    "download_url": f"https://www.twitch.tv/videos/{video_id}",
+                }
+            )
 
         seen = {}
         for s in streams:
@@ -170,7 +177,7 @@ class VodMonitor:
         try:
             return int(video_id)
         except ValueError:
-            return int(datetime.now(timezone.utc).timestamp())
+            return int(datetime.now(UTC).timestamp())
 
     def _extract_datetime_from_text(self, text: str):
         patterns = [
@@ -183,7 +190,7 @@ class VodMonitor:
             if m:
                 try:
                     dt = datetime.strptime(m.group(0), fmt)
-                    return dt.replace(tzinfo=timezone.utc)
+                    return dt.replace(tzinfo=UTC)
                 except ValueError:
                     continue
         return None
@@ -197,14 +204,16 @@ class VodMonitor:
             # Normalizar al formato interno
             results = []
             for v in vods:
-                results.append({
-                    "vod_id": v["vod_id"],
-                    "video_id": v["video_id"],
-                    "source": "twitch_api",
-                    "start_time": v["start_time"],
-                    "channel": channel,
-                    "download_url": v.get("url") or f"https://www.twitch.tv/videos/{v['video_id']}",
-                })
+                results.append(
+                    {
+                        "vod_id": v["vod_id"],
+                        "video_id": v["video_id"],
+                        "source": "twitch_api",
+                        "start_time": v["start_time"],
+                        "channel": channel,
+                        "download_url": v.get("url") or f"https://www.twitch.tv/videos/{v['video_id']}",
+                    }
+                )
             log.info("[TwitchAPI] %s -> %d streams", channel, len(results))
             return results
         except Exception as e:
@@ -278,10 +287,13 @@ class VodMonitor:
         log.info("[Monitor] Total nuevos streams detectados: %d", len(all_new))
         return all_new
 
+
 if __name__ == "__main__":
     import json
+
     from db import PipelineDB
-    with open("config.json", "r", encoding="utf-8") as f:
+
+    with open("config.json", encoding="utf-8") as f:
         cfg = json.load(f)
     db = PipelineDB(cfg["monitoring"]["db_path"])
     mon = VodMonitor(cfg, db)

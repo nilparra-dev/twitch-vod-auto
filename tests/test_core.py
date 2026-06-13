@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from auto_pipeline import AutoPipeline
 import progress
+from auto_pipeline import AutoPipeline
 from db import PipelineDB
 from download_vod import (
     _channel_twitch_config,
@@ -210,6 +210,60 @@ class AutoPipelineFileHandlingTests(unittest.TestCase):
         self.assertFalse(uploaded.exists())
         self.assertFalse(related.exists())
         self.assertFalse(thumb.exists())
+
+
+class CredentialsStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _make_credentials():
+        from google.oauth2.credentials import Credentials
+
+        return Credentials(
+            token="access-token",
+            refresh_token="refresh-token",
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id="client-id",
+            client_secret="client-secret",
+            scopes=["https://www.googleapis.com/auth/youtube.upload"],
+        )
+
+    def test_missing_file_returns_none(self):
+        from credentials_store import load_credentials
+
+        self.assertIsNone(load_credentials(os.path.join(self.tmp.name, "nope.json")))
+
+    def test_json_roundtrip(self):
+        import json
+
+        from credentials_store import load_credentials, save_credentials
+
+        path = os.path.join(self.tmp.name, "cred.json")
+        save_credentials(self._make_credentials(), path)
+
+        # Se persiste como JSON, no como pickle.
+        with open(path, encoding="utf-8") as fh:
+            self.assertIn("refresh_token", json.load(fh))
+
+        loaded = load_credentials(path)
+        self.assertEqual(loaded.refresh_token, "refresh-token")
+        self.assertEqual(loaded.client_id, "client-id")
+
+    def test_reads_legacy_pickle(self):
+        import pickle
+
+        from credentials_store import load_credentials
+
+        path = os.path.join(self.tmp.name, "legacy.pkl")
+        with open(path, "wb") as fh:
+            pickle.dump(self._make_credentials(), fh)
+
+        loaded = load_credentials(path)
+        self.assertEqual(loaded.refresh_token, "refresh-token")
 
 
 if __name__ == "__main__":

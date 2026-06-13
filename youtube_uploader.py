@@ -1,6 +1,5 @@
 import logging
 import os
-import pickle
 import ssl
 import time
 
@@ -12,6 +11,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from httplib2 import HttpLib2Error
 
+from credentials_store import load_credentials, save_credentials
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 log = logging.getLogger("youtube")
@@ -88,11 +88,7 @@ class YouTubeUploader:
         ) from exc
 
     def _get_authenticated_service(self):
-        credentials = None
-
-        if os.path.exists(self.credentials_file):
-            with open(self.credentials_file, "rb") as token:
-                credentials = pickle.load(token)
+        credentials = load_credentials(self.credentials_file)
 
         if not credentials or not credentials.valid:
             if credentials and credentials.expired and credentials.refresh_token:
@@ -110,13 +106,10 @@ class YouTubeUploader:
                         "Descargalo desde Google Cloud Console > Credentials."
                     )
                 log.info("Iniciando flujo OAuth de YouTube...")
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.client_secrets_file, SCOPES
-                )
+                flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_file, SCOPES)
                 credentials = flow.run_local_server(port=0)
 
-            with open(self.credentials_file, "wb") as token:
-                pickle.dump(credentials, token)
+            save_credentials(credentials, self.credentials_file)
 
         return build("youtube", "v3", credentials=credentials, cache_discovery=False)
 
@@ -256,7 +249,7 @@ class YouTubeUploader:
 if __name__ == "__main__":
     import json
 
-    with open("config.json", "r", encoding="utf-8") as f:
+    with open("config.json", encoding="utf-8") as f:
         cfg = json.load(f)
     yt = YouTubeUploader(
         cfg["youtube"]["client_secrets_file"],

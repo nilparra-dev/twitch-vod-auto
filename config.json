@@ -56,7 +56,7 @@
   "download": {
     "output_folder": "./downloads",
     "ffmpeg_folder": "./bin",
-    "git_bash_path": "C:\\Program Files\\Git\\git-bash.exe",
+    "git_bash_path": null,
     "use_npx": true,
     "reencode_for_youtube": false,
     "cleanup_after_upload": true,
