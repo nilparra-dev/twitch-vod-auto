@@ -10,7 +10,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from google_auth_oauthlib.flow import Flow
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -83,10 +84,13 @@ async def security_middleware(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
         "Content-Security-Policy",
+        # JS empaquetado (no inline) → sin script 'unsafe-inline'. Fuentes
+        # self-hosted → sin orígenes de Google. style 'unsafe-inline' se mantiene
+        # (estilos inline de la SPA y de Recharts).
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
         "base-uri 'self'; frame-ancestors 'self'; form-action 'self'",
@@ -236,13 +240,6 @@ def _clear_login_attempts(request: Request):
 # =============================================================================
 # Auth endpoints
 # =============================================================================
-
-
-@app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    if request.session.get("user"):
-        return RedirectResponse("/", status_code=302)
-    return HTMLResponse(LOGIN_HTML)
 
 
 @app.post("/api/login")
@@ -714,30 +711,35 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
 
 
 # =============================================================================
-# Pages
+# SPA: frontend compilado servido por FastAPI (mismo origen que la API)
 # =============================================================================
 
+DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
+ASSETS_DIR = DIST_DIR / "assets"
+INDEX_FILE = DIST_DIR / "index.html"
 
-@app.get("/", response_class=HTMLResponse)
-def dashboard_page(request: Request):
-    if not request.session.get("user"):
-        return RedirectResponse("/login", status_code=302)
-    return HTMLResponse(MAIN_HTML)
-
-
-# =============================================================================
-# HTML templates (servidas verbatim desde templates/)
-# =============================================================================
-
-_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+if ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 
-def _load_template(name: str) -> str:
-    return (_TEMPLATES_DIR / name).read_text(encoding="utf-8")
-
-
-LOGIN_HTML = _load_template("login.html")
-MAIN_HTML = _load_template("dashboard.html")
+@app.get("/{full_path:path}")
+def spa(full_path: str):
+    """Sirve la SPA. Las rutas /api/* y /healthz están declaradas antes y tienen
+    prioridad; aquí cae el resto (/, /login, /vods, …) → index.html (routing en
+    cliente). También sirve ficheros estáticos sueltos (favicon, etc.)."""
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "Not found")
+    if full_path:
+        candidate = (DIST_DIR / full_path).resolve()
+        try:
+            candidate.relative_to(DIST_DIR.resolve())
+        except ValueError:
+            raise HTTPException(404, "Not found") from None
+        if candidate.is_file():
+            return FileResponse(candidate)
+    if INDEX_FILE.is_file():
+        return FileResponse(INDEX_FILE)
+    raise HTTPException(503, "Frontend no compilado; ejecuta `npm run build` en frontend/.")
 
 
 if __name__ == "__main__":

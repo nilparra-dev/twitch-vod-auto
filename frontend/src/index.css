@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Design tokens — dark es el tema por defecto (.dark en <html>)
+   ============================================================ */
+@layer base {
+  :root {
+    /* Light */
+    --bg: #f6f5f0;
+    --surface: #ffffff;
+    --elevated: #fbfaf6;
+    --line: #e6e2d8;
+    --fg: #2a2926;
+    --muted: #6b6862;
+    --accent: #c2724e;
+    --accent-hover: #a8522f;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(194, 114, 78, 0.12);
+    --ok: #3f7d3f;
+    --warn: #b97f2e;
+    --danger: #c0524a;
+  }
+
+  .dark {
+    --bg: #1b1b19;
+    --surface: #242422;
+    --elevated: #2c2b28;
+    --line: rgba(255, 255, 255, 0.08);
+    --fg: #edebe4;
+    --muted: #a8a59c;
+    --accent: #d08763;
+    --accent-hover: #c2724e;
+    --accent-fg: #1b1b19;
+    --accent-soft: rgba(208, 135, 99, 0.16);
+    --ok: #7fb87f;
+    --warn: #e0a35e;
+    --danger: #d9776a;
+  }
+
+  * {
+    border-color: var(--line);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+  html:not(.dark) {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    font-feature-settings: "cv05", "ss01";
+    /* Atmósfera: halo cálido sutil arriba, sin planos muertos */
+    background-image: radial-gradient(
+      120% 80% at 50% -20%,
+      var(--accent-soft) 0%,
+      transparent 55%
+    );
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+
+  /* Scrollbar discreta */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
+    background-clip: padding-box;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-line bg-surface shadow-card;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-elevated;
+  }
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0 -translate-x-full;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.06),
+      transparent
+    );
+    animation: shimmer 1.4s infinite;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}

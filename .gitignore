@@ -35,6 +35,9 @@ downloads/
 *.part
 *.ytdl
 *.jpg
+# El patron *.ts de arriba es para segmentos de video de Twitch; reincluye el
+# codigo fuente TypeScript del frontend (que tambien usa extension .ts).
+!frontend/**/*.ts
 
 # Temporales
 ffmpeg_temp/
@@ -59,3 +62,4 @@ Thumbs.db
 
 # Git
 .git/
+.superpowers/

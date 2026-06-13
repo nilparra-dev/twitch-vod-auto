@@ -44,8 +44,10 @@ jobs:
       - name: Run tests
         run: python -m pytest --cov=. --cov-report=term-missing
 
-      - name: Build Docker image
-        run: docker build -t twitch-vod-auto:test .
+      - name: Build Docker images
+        run: |
+          docker build -t twitch-vod-auto:test .
+          docker build -f Dockerfile.dashboard -t twitch-vod-dashboard:test .
 
       - name: Validate required secrets
         run: |

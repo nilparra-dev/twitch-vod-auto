@@ -24,7 +24,7 @@ services:
   dashboard:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dashboard
     container_name: twitch-vod-dashboard
     restart: unless-stopped
     ports:
