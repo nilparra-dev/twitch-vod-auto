@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from auto_pipeline import AutoPipeline
 import progress
+from auto_pipeline import AutoPipeline
 from db import PipelineDB
 from download_vod import (
     _channel_twitch_config,

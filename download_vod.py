@@ -8,11 +8,10 @@ import subprocess
 import time
 from pathlib import Path
 
+from progress import DownloadProgress
 from retry import retry_with_backoff
 from thumbnail import ThumbnailGenerator
 from utils import get_file_size_mb, parse_size_to_mb
-from progress import DownloadProgress
-
 
 log = logging.getLogger("download")
 MIN_DOWNLOAD_FILE_BYTES = 1024 * 1024
@@ -152,10 +151,7 @@ def _dir_contents_for_log(parent: Path, video_id: str = None, output_stem: str =
     if not selected:
         selected = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
 
-    return [
-        f"{p.name} ({p.stat().st_size // 1024 // 1024}MB)"
-        for p in selected
-    ]
+    return [f"{p.name} ({p.stat().st_size // 1024 // 1024}MB)" for p in selected]
 
 
 def _build_target(vod_id: str, tracker_url: str = None, download_url: str = None, video_id: str = None) -> str:
@@ -183,7 +179,7 @@ def _build_command(
         bash_cmd = (
             f"export PATH=$PATH:{shlex.quote(ffmpeg_folder)} && "
             f"npx twitch-dlp {shlex.quote(target)} -o {shlex.quote(output_file)} "
-            f'{" ".join(shlex.quote(a) for a in twitch_dlp_args)}'
+            f"{' '.join(shlex.quote(a) for a in twitch_dlp_args)}"
         )
         return [git_bash, "-c", bash_cmd], None
 
@@ -208,8 +204,7 @@ def _build_merge_command(base_path: Path, ffmpeg_folder: str, download_cfg: dict
 
     if use_npx and git_bash and is_windows:
         bash_cmd = (
-            f"export PATH=$PATH:{shlex.quote(ffmpeg_folder)} && "
-            f"npx twitch-dlp {shlex.quote(base)} --merge-fragments"
+            f"export PATH=$PATH:{shlex.quote(ffmpeg_folder)} && npx twitch-dlp {shlex.quote(base)} --merge-fragments"
         )
         return [git_bash, "-c", bash_cmd], None
 
@@ -227,7 +222,9 @@ def _build_merge_command(base_path: Path, ffmpeg_folder: str, download_cfg: dict
     return cmd, env
 
 
-def _try_merge_fragments(output_path: Path, video_id: str, ffmpeg_folder: str, download_cfg: dict, is_windows: bool) -> Path:
+def _try_merge_fragments(
+    output_path: Path, video_id: str, ffmpeg_folder: str, download_cfg: dict, is_windows: bool
+) -> Path:
     for base_path in _fragment_bases(output_path, video_id=video_id):
         count = _fragment_count(base_path)
         if count <= 0:
@@ -303,7 +300,9 @@ def download_vod_auto(
     if cookies_file and not os.path.isfile(cookies_file):
         log.warning("[Download] cookies_file configurado pero no es un archivo valido: %s", cookies_file)
     elif cookies_file:
-        log.info("[Download] cookies_file configurado (%s), pero twitch-dlp no soporta --cookies; se ignora", cookies_file)
+        log.info(
+            "[Download] cookies_file configurado (%s), pero twitch-dlp no soporta --cookies; se ignora", cookies_file
+        )
     elif twitch_cfg.get("cookies_browser"):
         log.info(
             "[Download] cookies_browser configurado (%s), pero twitch-dlp no soporta --cookies-from-browser; se ignora",
@@ -391,7 +390,7 @@ def download_vod_auto(
                 speed_match = speed_pattern.search(line)
                 eta_match = eta_pattern.search(line)
                 elapsed = int(now - start_ts)
-                elapsed_str = f"{elapsed//60:02d}:{elapsed%60:02d}"
+                elapsed_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
                 speed = speed_match.group(1) if speed_match else "?"
                 eta = eta_match.group(1) if eta_match else "?"
                 size_info = f" de {total_size_str}" if total_size_str else ""
@@ -442,7 +441,7 @@ def download_vod_auto(
                     )
 
     elapsed_total = int(time.time() - start_ts)
-    elapsed_str = f"{elapsed_total//60:02d}:{elapsed_total%60:02d}"
+    elapsed_str = f"{elapsed_total // 60:02d}:{elapsed_total % 60:02d}"
     if not final_path:
         final_path = _try_merge_fragments(output_path, video_id, ffmpeg_folder, download_cfg, is_windows)
 
@@ -450,7 +449,9 @@ def download_vod_auto(
         output_file = str(final_path)
         size_mb = get_file_size_mb(output_file)
         avg_speed = size_mb / max(elapsed_total, 1) * 60
-        log.info("[Download] Completado: %s (%.1f MB) en %s (~%.1f MB/min)", output_file, size_mb, elapsed_str, avg_speed)
+        log.info(
+            "[Download] Completado: %s (%.1f MB) en %s (~%.1f MB/min)", output_file, size_mb, elapsed_str, avg_speed
+        )
         DownloadProgress.complete(vod_id, file_size_mb=size_mb)
 
         ffmpeg_exe = os.path.join(ffmpeg_folder, "ffmpeg")
@@ -467,7 +468,9 @@ def download_vod_auto(
         error_msg = f"Codigo de salida: {process.returncode}"
 
     try:
-        contents = _dir_contents_for_log(Path(output_file).parent, video_id=video_id, output_stem=Path(output_file).stem)
+        contents = _dir_contents_for_log(
+            Path(output_file).parent, video_id=video_id, output_stem=Path(output_file).stem
+        )
         log.error("[Download] Error tras %s. %s. Dir: %s", elapsed_str, error_msg, ", ".join(contents[:20]))
         tail = " || ".join(output_tail[-10:])
         if tail:
@@ -506,7 +509,7 @@ def download_vod_with_retry(
 
 
 if __name__ == "__main__":
-    with open("config.json", "r", encoding="utf-8") as f:
+    with open("config.json", encoding="utf-8") as f:
         cfg = json.load(f)
 
     vod = input("VOD ID: ").strip()

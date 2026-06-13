@@ -1,10 +1,11 @@
-import requests
 import logging
 import os
-from datetime import datetime, timezone
-from typing import List, Dict
+from datetime import datetime
+
+import requests
 
 log = logging.getLogger("twitch_api")
+
 
 class TwitchAPIClient:
     """
@@ -19,22 +20,15 @@ class TwitchAPIClient:
         self.client_secret = client_secret or os.getenv("TWITCH_CLIENT_SECRET")
         self._token = None
         self.session = requests.Session()
-        self.session.headers.update({
-            "Client-ID": self.client_id or "",
-            "Accept": "application/json"
-        })
+        self.session.headers.update({"Client-ID": self.client_id or "", "Accept": "application/json"})
 
     def _get_app_token(self) -> str:
         if self._token:
             return self._token
         resp = requests.post(
             "https://id.twitch.tv/oauth2/token",
-            data={
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "grant_type": "client_credentials"
-            },
-            timeout=15
+            data={"client_id": self.client_id, "client_secret": self.client_secret, "grant_type": "client_credentials"},
+            timeout=15,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -63,21 +57,16 @@ class TwitchAPIClient:
             raise ValueError(f"Canal no encontrado en Twitch API: {login}")
         return users[0]["id"]
 
-    def get_videos(self, user_id: str, limit: int = 10, period: str = "month") -> List[Dict]:
+    def get_videos(self, user_id: str, limit: int = 10, period: str = "month") -> list[dict]:
         """
         Obtiene videos/VODs de un canal.
         period: all, day, week, month
         type: all, upload, archive, highlight
         """
-        data = self._request("/videos", {
-            "user_id": user_id,
-            "first": limit,
-            "period": period,
-            "type": "archive"
-        })
+        data = self._request("/videos", {"user_id": user_id, "first": limit, "period": period, "type": "archive"})
         return data.get("data", [])
 
-    def get_recent_archives(self, login: str, limit: int = 10) -> List[Dict]:
+    def get_recent_archives(self, login: str, limit: int = 10) -> list[dict]:
         """
         Obtiene los ultimos VODs (archives) de un canal.
         Retorna lista de dicts con: id, title, created_at, duration, url, etc.
@@ -98,17 +87,19 @@ class TwitchAPIClient:
             except Exception:
                 start_timestamp = 0
 
-            results.append({
-                "vod_id": f"video:{login}_{v['id']}_{start_timestamp}",
-                "video_id": v["id"],
-                "channel": login,
-                "title": v.get("title", ""),
-                "url": v.get("url", ""),
-                "created_at": created,
-                "start_time": start_timestamp,
-                "duration_sec": duration_sec,
-                "source": "twitch_api"
-            })
+            results.append(
+                {
+                    "vod_id": f"video:{login}_{v['id']}_{start_timestamp}",
+                    "video_id": v["id"],
+                    "channel": login,
+                    "title": v.get("title", ""),
+                    "url": v.get("url", ""),
+                    "created_at": created,
+                    "start_time": start_timestamp,
+                    "duration_sec": duration_sec,
+                    "source": "twitch_api",
+                }
+            )
         return results
 
     @staticmethod
@@ -117,9 +108,10 @@ class TwitchAPIClient:
         raw = raw.upper().replace("PT", "")
         total = 0
         import re
-        hours = re.search(r'(\d+)H', raw)
-        minutes = re.search(r'(\d+)M', raw)
-        seconds = re.search(r'(\d+)S', raw)
+
+        hours = re.search(r"(\d+)H", raw)
+        minutes = re.search(r"(\d+)M", raw)
+        seconds = re.search(r"(\d+)S", raw)
         if hours:
             total += int(hours.group(1)) * 3600
         if minutes:
@@ -127,6 +119,7 @@ class TwitchAPIClient:
         if seconds:
             total += int(seconds.group(1))
         return total
+
 
 if __name__ == "__main__":
     client = TwitchAPIClient()

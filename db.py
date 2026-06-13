@@ -1,8 +1,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from datetime import UTC, datetime
 
 
 class PipelineDB:
@@ -94,9 +93,7 @@ class PipelineDB:
 
     def is_processed(self, vod_id: str) -> bool:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM processed_vods WHERE vod_id = ?", (vod_id,)
-            ).fetchone()
+            row = conn.execute("SELECT 1 FROM processed_vods WHERE vod_id = ?", (vod_id,)).fetchone()
             return row is not None
 
     def add_vod(
@@ -113,24 +110,27 @@ class PipelineDB:
         download_url: str = None,
     ):
         with self._connect() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT OR IGNORE INTO processed_vods
                 (vod_id, channel, video_id, source, detected_at, status, error_message,
                  file_path, file_size_mb, tracker_url, download_url)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                vod_id,
-                channel,
-                video_id,
-                source,
-                datetime.now(timezone.utc).isoformat(),
-                status,
-                error,
-                file_path,
-                file_size_mb,
-                tracker_url,
-                download_url,
-            ))
+            """,
+                (
+                    vod_id,
+                    channel,
+                    video_id,
+                    source,
+                    datetime.now(UTC).isoformat(),
+                    status,
+                    error,
+                    file_path,
+                    file_size_mb,
+                    tracker_url,
+                    download_url,
+                ),
+            )
 
     def update_vod_status(
         self,
@@ -143,7 +143,7 @@ class PipelineDB:
     ):
         with self._connect() as conn:
             sets = ["status = ?", "processed_at = ?"]
-            vals = [status, datetime.now(timezone.utc).isoformat()]
+            vals = [status, datetime.now(UTC).isoformat()]
             if youtube_id is not None:
                 sets.append("youtube_id = ?")
                 vals.append(youtube_id)
@@ -159,12 +159,10 @@ class PipelineDB:
             vals.append(vod_id)
             conn.execute(f"UPDATE processed_vods SET {', '.join(sets)} WHERE vod_id = ?", vals)
 
-    def get_vod(self, vod_id: str) -> Optional[Dict]:
+    def get_vod(self, vod_id: str) -> dict | None:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM processed_vods WHERE vod_id = ?", (vod_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM processed_vods WHERE vod_id = ?", (vod_id,)).fetchone()
             return dict(row) if row else None
 
     def get_vods(
@@ -174,7 +172,7 @@ class PipelineDB:
         search: str = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         limit = max(1, min(int(limit), 100))
         offset = max(0, int(offset))
         with self._connect() as conn:
@@ -222,18 +220,21 @@ class PipelineDB:
     def reset_vod(self, vod_id: str):
         """Reset a VOD record before requeueing it explicitly."""
         with self._connect() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE processed_vods
                 SET status = 'pending', processed_at = NULL, error_message = NULL, youtube_id = NULL
                 WHERE vod_id = ?
-            """, (vod_id,))
+            """,
+                (vod_id,),
+            )
 
     def delete_vod(self, vod_id: str):
         with self._connect() as conn:
             conn.execute("DELETE FROM processed_vods WHERE vod_id = ?", (vod_id,))
             conn.execute("DELETE FROM download_queue WHERE vod_id = ?", (vod_id,))
 
-    def get_summary_counts(self) -> Dict:
+    def get_summary_counts(self) -> dict:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("""
@@ -247,11 +248,12 @@ class PipelineDB:
             """).fetchone()
             return dict(row) if row else {"total": 0, "pending": 0, "downloading": 0, "uploaded": 0, "failed": 0}
 
-    def get_daily_activity(self, days: int = 7) -> List[Dict]:
+    def get_daily_activity(self, days: int = 7) -> list[dict]:
         days = max(1, min(int(days), 90))
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
+            rows = conn.execute(
+                """
                 SELECT
                     date(detected_at) as day,
                     COUNT(*) as total,
@@ -261,14 +263,14 @@ class PipelineDB:
                 WHERE detected_at >= date('now', ?)
                 GROUP BY date(detected_at)
                 ORDER BY day ASC
-            """, (f"-{days} days",)).fetchall()
+            """,
+                (f"-{days} days",),
+            ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_channels(self) -> List[str]:
+    def get_channels(self) -> list[str]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT channel FROM processed_vods ORDER BY channel"
-            ).fetchall()
+            rows = conn.execute("SELECT DISTINCT channel FROM processed_vods ORDER BY channel").fetchall()
             return [r[0] for r in rows]
 
     # --- Queue ---
@@ -285,7 +287,8 @@ class PipelineDB:
                 stream_info.get("download_url"),
             )
             if force:
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO download_queue
                         (vod_id, channel, video_id, source, start_time, tracker_url, download_url, status, attempts, error)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, NULL)
@@ -299,17 +302,22 @@ class PipelineDB:
                         status = 'queued',
                         attempts = 0,
                         error = NULL
-                """, values)
+                """,
+                    values,
+                )
             else:
                 try:
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO download_queue (vod_id, channel, video_id, source, start_time, tracker_url, download_url)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, values)
+                    """,
+                        values,
+                    )
                 except sqlite3.IntegrityError:
                     pass
 
-    def dequeue(self) -> Optional[Dict]:
+    def dequeue(self) -> dict | None:
         conn = self._raw_connect()
         conn.row_factory = sqlite3.Row
         try:
@@ -323,10 +331,7 @@ class PipelineDB:
             if not row:
                 conn.commit()
                 return None
-            conn.execute(
-                "UPDATE download_queue SET status = 'downloading', error = NULL WHERE id = ?",
-                (row["id"],)
-            )
+            conn.execute("UPDATE download_queue SET status = 'downloading', error = NULL WHERE id = ?", (row["id"],))
             conn.commit()
             return dict(row)
         except Exception:
@@ -338,10 +343,13 @@ class PipelineDB:
     def mark_queue_status(self, vod_id: str, status: str, error: str = None):
         with self._connect() as conn:
             if status == "failed":
-                conn.execute("""
+                conn.execute(
+                    """
                     UPDATE download_queue SET status = ?, error = ?, attempts = attempts + 1
                     WHERE vod_id = ?
-                """, (status, error, vod_id))
+                """,
+                    (status, error, vod_id),
+                )
             else:
                 conn.execute(
                     "UPDATE download_queue SET status = ?, error = NULL WHERE vod_id = ?",
@@ -352,7 +360,7 @@ class PipelineDB:
         with self._connect() as conn:
             conn.execute("DELETE FROM download_queue WHERE vod_id = ?", (vod_id,))
 
-    def get_queue_summary(self) -> Dict:
+    def get_queue_summary(self) -> dict:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("""
@@ -372,15 +380,18 @@ class PipelineDB:
         if not col:
             return
         with self._connect() as conn:
-            conn.execute(f"""
+            conn.execute(
+                f"""
                 INSERT INTO channel_stats (channel, {col}, last_check)
                 VALUES (?, 1, ?)
                 ON CONFLICT(channel) DO UPDATE SET
                 {col} = {col} + 1,
                 last_check = excluded.last_check
-            """, (channel, datetime.now(timezone.utc).isoformat()))
+            """,
+                (channel, datetime.now(UTC).isoformat()),
+            )
 
-    def get_stats(self) -> List[Dict]:
+    def get_stats(self) -> list[dict]:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM channel_stats").fetchall()

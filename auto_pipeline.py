@@ -1,39 +1,36 @@
-import os
-import sys
-import time
 import json
 import logging
+import os
 import queue
 import signal
-import threading
-import traceback
 import subprocess
-from datetime import datetime, timezone
+import sys
+import threading
+import time
+import traceback
+from datetime import UTC, datetime
 from pathlib import Path
 
 from db import PipelineDB
-from monitor import VodMonitor
 from download_vod import download_vod_with_retry
-from youtube_uploader import YouTubeAuthError, YouTubeUploader
-from thumbnail import ThumbnailGenerator
+from monitor import VodMonitor
 from progress import DownloadProgress
-from utils import setup_logging, sanitize_filename, get_file_size_mb
+from utils import get_file_size_mb, sanitize_filename, setup_logging
+from youtube_uploader import YouTubeAuthError, YouTubeUploader
 
 log = logging.getLogger("pipeline")
 MIN_REUSABLE_DOWNLOAD_BYTES = 10 * 1024 * 1024
 REUSABLE_VIDEO_EXTENSIONS = {".mp4"}
 
+
 class AutoPipeline:
     def __init__(self, config_path: str = "config.json"):
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             self.config = json.load(f)
 
         # Logging
         app_cfg = self.config.get("app", {})
-        setup_logging(
-            log_level=app_cfg.get("log_level", "INFO"),
-            log_file=app_cfg.get("log_file", "logs/pipeline.log")
-        )
+        setup_logging(log_level=app_cfg.get("log_level", "INFO"), log_file=app_cfg.get("log_file", "logs/pipeline.log"))
 
         # DB
         self.db = PipelineDB(self.config["monitoring"]["db_path"])
@@ -171,10 +168,10 @@ class AutoPipeline:
     def _safe_stream_date(self, start_time):
         try:
             if not start_time or start_time <= 0 or start_time > 9_999_999_999:
-                return datetime.now(timezone.utc)
-            return datetime.fromtimestamp(start_time, tz=timezone.utc)
+                return datetime.now(UTC)
+            return datetime.fromtimestamp(start_time, tz=UTC)
         except (ValueError, OSError, OverflowError):
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
 
     def _generate_title(self, stream_info: dict, yt_cfg: dict) -> str:
         if yt_cfg.get("custom_title"):
@@ -209,9 +206,12 @@ class AutoPipeline:
     def _probe_duration_seconds(self, ffprobe_exe: str, file_path: str) -> float:
         cmd = [
             ffprobe_exe,
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             file_path,
         ]
         try:
@@ -272,11 +272,25 @@ class AutoPipeline:
             duration = self._probe_duration_seconds(ffprobe_exe, str(src))
 
             cmd = [
-                ffmpeg_exe, "-y", "-i", str(src),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "160k",
-                "-movflags", "+faststart",
-                "-progress", "pipe:1", "-nostats",
+                ffmpeg_exe,
+                "-y",
+                "-i",
+                str(src),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "22",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+                "-progress",
+                "pipe:1",
+                "-nostats",
                 str(tmp),
             ]
 
@@ -374,16 +388,17 @@ class AutoPipeline:
                 new_size = src.stat().st_size / 1024 / 1024
                 log.info("[Reencode] OK: %s -> %.1f MB en %ds", src.name, new_size, elapsed)
                 DownloadProgress.update(
-                    vod_id, percent=100.0,
-                    file_size_mb=new_size, elapsed_seconds=elapsed,
+                    vod_id,
+                    percent=100.0,
+                    file_size_mb=new_size,
+                    elapsed_seconds=elapsed,
                     processed_seconds=duration or None,
                     encoded_mb=new_size,
                     message="Reencode completado",
                 )
                 return str(src)
             else:
-                log.error("[Reencode] Fallo rc=%s, size=%s", proc.returncode,
-                          tmp.stat().st_size if tmp.exists() else 0)
+                log.error("[Reencode] Fallo rc=%s, size=%s", proc.returncode, tmp.stat().st_size if tmp.exists() else 0)
                 DownloadProgress.update(
                     vod_id,
                     stage="encoding",
@@ -454,14 +469,16 @@ class AutoPipeline:
                 DownloadProgress.complete(vod_id, file_size_mb=size_mb)
                 self.db.update_vod_status(vod_id, "downloaded", file_path=file_path, file_size_mb=size_mb)
                 self.db.mark_queue_status(vod_id, "downloaded")
-                self.upload_queue.put({
-                    "vod_id": vod_id,
-                    "channel": channel,
-                    "video_id": video_id,
-                    "source": source,
-                    "start_time": start_time,
-                    "file_path": file_path
-                })
+                self.upload_queue.put(
+                    {
+                        "vod_id": vod_id,
+                        "channel": channel,
+                        "video_id": video_id,
+                        "source": source,
+                        "start_time": start_time,
+                        "file_path": file_path,
+                    }
+                )
                 log.info("[DownloadWorker] Descarga OK: %s -> %s (%.1f MB)", vod_id, file_path, size_mb)
             else:
                 err = "Fallo la descarga o archivo no generado"
@@ -487,7 +504,7 @@ class AutoPipeline:
                 "channel": channel,
                 "video_id": item["video_id"],
                 "vod_id": vod_id,
-                "start_time": item["start_time"]
+                "start_time": item["start_time"],
             }
 
             log.info("[UploadWorker] Iniciando subida: %s", vod_id)
@@ -523,7 +540,7 @@ class AutoPipeline:
                 upload_started = time.time()
                 last_upload_progress = 0
 
-                def on_upload_progress(percent, uploaded_mb, total_mb):
+                def on_upload_progress(percent, uploaded_mb, total_mb, *, vod_id=vod_id, upload_started=upload_started):
                     nonlocal last_upload_progress
                     now = time.time()
                     if percent < 100.0 and now - last_upload_progress < 2:
@@ -666,7 +683,7 @@ class AutoPipeline:
 
     def run_once(self):
         log.info("=" * 60)
-        log.info("[Pipeline] Ciclo de monitoreo: %s", datetime.now(timezone.utc).isoformat())
+        log.info("[Pipeline] Ciclo de monitoreo: %s", datetime.now(UTC).isoformat())
         log.info("=" * 60)
 
         # Monitorear canales automáticos
@@ -690,6 +707,7 @@ class AutoPipeline:
         Necesario para que `docker stop` (SIGTERM) cierre limpiamente en vez de
         ser forzado con SIGKILL tras el periodo de gracia.
         """
+
         def _handler(signum, _frame):
             log.info("[Pipeline] Senal %s recibida; iniciando apagado graceful...", signum)
             self.running = False
@@ -739,6 +757,7 @@ class AutoPipeline:
         self.download_queue.join()
         self.upload_queue.join()
         log.info("[Pipeline] Apagado completo.")
+
 
 def main():
     pipeline = AutoPipeline(os.getenv("CONFIG_PATH", "config.json"))

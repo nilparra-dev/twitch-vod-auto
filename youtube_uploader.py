@@ -13,7 +13,6 @@ from httplib2 import HttpLib2Error
 
 from credentials_store import load_credentials, save_credentials
 
-
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 log = logging.getLogger("youtube")
 
@@ -107,9 +106,7 @@ class YouTubeUploader:
                         "Descargalo desde Google Cloud Console > Credentials."
                     )
                 log.info("Iniciando flujo OAuth de YouTube...")
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.client_secrets_file, SCOPES
-                )
+                flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_file, SCOPES)
                 credentials = flow.run_local_server(port=0)
 
             save_credentials(credentials, self.credentials_file)
@@ -252,7 +249,7 @@ class YouTubeUploader:
 if __name__ == "__main__":
     import json
 
-    with open("config.json", "r", encoding="utf-8") as f:
+    with open("config.json", encoding="utf-8") as f:
         cfg = json.load(f)
     yt = YouTubeUploader(
         cfg["youtube"]["client_secrets_file"],

@@ -1,9 +1,9 @@
-import os
-import logging
-import sys
 import json
-from datetime import datetime, timezone
-from pathlib import Path
+import logging
+import os
+import sys
+from datetime import UTC, datetime
+
 from dotenv import load_dotenv
 
 # Carga .env automaticamente si existe
@@ -12,6 +12,7 @@ load_dotenv()
 # ==========================
 # Logging profesional
 # ==========================
+
 
 class JSONFormatter(logging.Formatter):
     def format(self, record):
@@ -24,6 +25,7 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info:
             log_obj["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_obj, ensure_ascii=False)
+
 
 def setup_logging(log_level: str = "INFO", log_file: str = None, use_json: bool = False):
     level = getattr(logging, log_level.upper(), logging.INFO)
@@ -38,8 +40,7 @@ def setup_logging(log_level: str = "INFO", log_file: str = None, use_json: bool 
         fmt = JSONFormatter()
     else:
         fmt = logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            "%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
 
     console = logging.StreamHandler(sys.stdout)
@@ -56,26 +57,32 @@ def setup_logging(log_level: str = "INFO", log_file: str = None, use_json: bool 
 
     return root
 
+
 # ==========================
 # Helpers
 # ==========================
 
+
 def sanitize_filename(name: str) -> str:
     invalid = '<>:"/\\|?*'
     for ch in invalid:
-        name = name.replace(ch, '_')
-    return name.strip('. ')
+        name = name.replace(ch, "_")
+    return name.strip(". ")
+
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
+
 
 def fmt_duration(seconds: int) -> str:
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
+
 
 def merge_config(global_cfg: dict, override: dict) -> dict:
     result = global_cfg.copy()
@@ -88,11 +95,13 @@ def merge_config(global_cfg: dict, override: dict) -> dict:
             result[k] = v
     return result
 
+
 def get_file_size_mb(path: str) -> float:
     try:
         return os.path.getsize(path) / (1024 * 1024)
     except Exception:
         return 0.0
+
 
 def parse_size_to_mb(size_str: str) -> float:
     """
@@ -100,15 +109,25 @@ def parse_size_to_mb(size_str: str) -> float:
     """
     try:
         s = size_str.strip()
-        units = {"B": 1/(1024*1024), "KiB": 1/1024, "MiB": 1, "GiB": 1024, "TiB": 1024*1024,
-                 "KB": 1/1000, "MB": 1, "GB": 1000, "kB": 1/1024}
+        units = {
+            "B": 1 / (1024 * 1024),
+            "KiB": 1 / 1024,
+            "MiB": 1,
+            "GiB": 1024,
+            "TiB": 1024 * 1024,
+            "KB": 1 / 1000,
+            "MB": 1,
+            "GB": 1000,
+            "kB": 1 / 1024,
+        }
         for unit, mult in sorted(units.items(), key=lambda x: -len(x[0])):
             if s.endswith(unit):
-                num = float(s[:-len(unit)].strip())
+                num = float(s[: -len(unit)].strip())
                 return num * mult
         return float(s) / (1024 * 1024)
     except Exception:
         return 0.0
+
 
 def parse_twitch_vod_url(url: str) -> dict:
     """
@@ -122,6 +141,7 @@ def parse_twitch_vod_url(url: str) -> dict:
     Retorna None si no es parseable.
     """
     import re
+
     url = url.strip()
 
     # Ya es un vod_id interno
@@ -205,6 +225,7 @@ def parse_twitch_vod_url(url: str) -> dict:
         }
 
     return None
+
 
 if __name__ == "__main__":
     log = setup_logging("DEBUG", "logs/test.log")

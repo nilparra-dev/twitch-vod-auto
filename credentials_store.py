@@ -29,7 +29,7 @@ def load_credentials(path: str):
 
     # Formato preferido: JSON de google-auth.
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             info = json.load(fh)
         return Credentials.from_authorized_user_info(info)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):

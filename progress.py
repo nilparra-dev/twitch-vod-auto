@@ -1,9 +1,9 @@
 import json
 import os
-import time
 import threading
+import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # Archivo compartido para trackear progreso de descargas en tiempo real.
 PROGRESS_FILE = "data/download_progress.json"
@@ -32,7 +32,7 @@ def _process_lock(timeout_seconds=10, stale_seconds=120):
             except OSError:
                 continue
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"No se pudo bloquear {PROGRESS_FILE}")
+                raise TimeoutError(f"No se pudo bloquear {PROGRESS_FILE}") from None
             time.sleep(0.05)
 
     try:
@@ -54,7 +54,7 @@ class DownloadProgress:
     def _read():
         try:
             if os.path.exists(PROGRESS_FILE):
-                with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+                with open(PROGRESS_FILE, encoding="utf-8") as f:
                     return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -76,7 +76,7 @@ class DownloadProgress:
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 data[vod_id] = {
                     "vod_id": vod_id,
                     "channel": channel,
@@ -95,10 +95,23 @@ class DownloadProgress:
                 DownloadProgress._write(data)
 
     @staticmethod
-    def update(vod_id, percent=None, speed=None, eta=None, file_size_mb=None,
-               total_size_mb=None, downloaded_mb=None, elapsed_seconds=None,
-               status=None, stage=None, message=None, duration_seconds=None,
-               processed_seconds=None, encoded_mb=None, raw_line=None):
+    def update(
+        vod_id,
+        percent=None,
+        speed=None,
+        eta=None,
+        file_size_mb=None,
+        total_size_mb=None,
+        downloaded_mb=None,
+        elapsed_seconds=None,
+        status=None,
+        stage=None,
+        message=None,
+        duration_seconds=None,
+        processed_seconds=None,
+        encoded_mb=None,
+        raw_line=None,
+    ):
         """Actualiza el progreso de una descarga."""
         with _lock:
             with _process_lock():
@@ -133,7 +146,7 @@ class DownloadProgress:
                     data[vod_id]["encoded_mb"] = round(encoded_mb, 1)
                 if raw_line is not None:
                     data[vod_id]["raw_line"] = str(raw_line)[-500:]
-                data[vod_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                data[vod_id]["updated_at"] = datetime.now(UTC).isoformat()
                 DownloadProgress._write(data)
 
     @staticmethod
@@ -150,8 +163,8 @@ class DownloadProgress:
                 data[vod_id]["percent"] = 100.0
                 if file_size_mb:
                     data[vod_id]["file_size_mb"] = round(file_size_mb, 1)
-                data[vod_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
-                data[vod_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                data[vod_id]["completed_at"] = datetime.now(UTC).isoformat()
+                data[vod_id]["updated_at"] = datetime.now(UTC).isoformat()
                 DownloadProgress._write(data)
 
     @staticmethod
@@ -166,7 +179,7 @@ class DownloadProgress:
                 data[vod_id]["stage"] = "failed"
                 data[vod_id]["message"] = str(error)
                 data[vod_id]["error"] = str(error)
-                data[vod_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                data[vod_id]["updated_at"] = datetime.now(UTC).isoformat()
                 DownloadProgress._write(data)
 
     @staticmethod
@@ -188,7 +201,7 @@ class DownloadProgress:
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
-                now = datetime.now(timezone.utc).timestamp()
+                now = datetime.now(UTC).timestamp()
                 to_delete = []
                 for vod_id, info in data.items():
                     status = info.get("status")

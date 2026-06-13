@@ -1,23 +1,23 @@
-import os
 import asyncio
 import json
-import secrets
 import logging
+import os
+import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from fastapi import FastAPI, Request, Depends, HTTPException, Form
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from google_auth_oauthlib.flow import Flow
 from starlette.middleware.sessions import SessionMiddleware
 
 from credentials_store import load_credentials, save_credentials
 from db import PipelineDB
-from utils import parse_twitch_vod_url
 from progress import DownloadProgress
+from utils import parse_twitch_vod_url
 from youtube_uploader import SCOPES
 
 # =============================================================================
@@ -27,7 +27,7 @@ from youtube_uploader import SCOPES
 CONFIG_PATH = os.getenv("CONFIG_PATH", "config.json")
 config = {}
 if os.path.exists(CONFIG_PATH):
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    with open(CONFIG_PATH, encoding="utf-8") as f:
         config = json.load(f)
 
 DB_PATH = config.get("monitoring", {}).get("db_path", "data/pipeline.db")
@@ -122,7 +122,7 @@ def _youtube_credentials_file() -> str:
 
 def _client_secret_type(path: str) -> str:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if "web" in data:
             return "web"
@@ -166,7 +166,7 @@ def _youtube_credentials_status(path: str) -> dict:
 
     try:
         mtime = os.path.getmtime(path)
-        status["updated_at"] = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        status["updated_at"] = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
         credentials = load_credentials(path)
         if credentials is None:
             status["error"] = "No se pudieron leer las credenciales"
@@ -177,8 +177,8 @@ def _youtube_credentials_status(path: str) -> dict:
         expiry = getattr(credentials, "expiry", None)
         if expiry:
             if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            status["expiry"] = expiry.astimezone(timezone.utc).isoformat()
+                expiry = expiry.replace(tzinfo=UTC)
+            status["expiry"] = expiry.astimezone(UTC).isoformat()
     except Exception as e:
         status["error"] = str(e)
 
@@ -237,6 +237,7 @@ def _clear_login_attempts(request: Request):
 # Auth endpoints
 # =============================================================================
 
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     if request.session.get("user"):
@@ -270,6 +271,7 @@ def api_me(request: Request, user: str = Depends(require_auth)):
 # API endpoints (protegidos)
 # =============================================================================
 
+
 @app.get("/api/stats")
 def api_stats(_: str = Depends(require_auth)):
     db = get_db()
@@ -279,13 +281,19 @@ def api_stats(_: str = Depends(require_auth)):
         "channels": db.get_channels(),
         "stats": db.get_stats(),
         "vods": db.get_vods(limit=10),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     }
 
 
 @app.get("/api/vods")
-def api_vods(status: str = None, channel: str = None, search: str = None,
-             limit: int = 25, offset: int = 0, _: str = Depends(require_auth)):
+def api_vods(
+    status: str = None,
+    channel: str = None,
+    search: str = None,
+    limit: int = 25,
+    offset: int = 0,
+    _: str = Depends(require_auth),
+):
     db = get_db()
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
@@ -310,15 +318,18 @@ def api_vod_retry(vod_id: str, _: str = Depends(require_auth)):
     if not vod:
         raise HTTPException(404, "VOD no encontrado")
     db.reset_vod(vod_id)
-    db.enqueue({
-        "vod_id": vod_id,
-        "channel": vod["channel"],
-        "video_id": vod["video_id"],
-        "source": vod.get("source", "manual"),
-        "start_time": 0,
-        "tracker_url": vod.get("tracker_url"),
-        "download_url": vod.get("download_url"),
-    }, force=True)
+    db.enqueue(
+        {
+            "vod_id": vod_id,
+            "channel": vod["channel"],
+            "video_id": vod["video_id"],
+            "source": vod.get("source", "manual"),
+            "start_time": 0,
+            "tracker_url": vod.get("tracker_url"),
+            "download_url": vod.get("download_url"),
+        },
+        force=True,
+    )
     return {"status": "ok", "message": "VOD reencolado"}
 
 
@@ -445,7 +456,7 @@ def api_health(_: str = Depends(require_auth)):
         "db_path": DB_PATH,
         "log_path": LOG_PATH,
         "log_size_bytes": log_size,
-        "uptime": datetime.now(timezone.utc).isoformat(),
+        "uptime": datetime.now(UTC).isoformat(),
     }
 
 
@@ -514,7 +525,13 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
     if not code_verifier:
         raise HTTPException(400, "Falta code_verifier; inicia otra renovacion OAuth")
     if time.time() - started_at > 15 * 60:
-        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_code_verifier", "youtube_oauth_started_at"):
+        for key in (
+            "youtube_oauth_state",
+            "youtube_oauth_redirect_uri",
+            "youtube_oauth_mode",
+            "youtube_oauth_code_verifier",
+            "youtube_oauth_started_at",
+        ):
             request.session.pop(key, None)
         raise HTTPException(400, "La renovacion OAuth ha caducado; inicia otra")
 
@@ -543,9 +560,15 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
         return {"status": "ok"}
     except Exception as e:
         log.error("[YouTubeOAuth] Error completando OAuth Desktop: %s", e)
-        raise HTTPException(400, f"No se pudo completar OAuth: {e}")
+        raise HTTPException(400, f"No se pudo completar OAuth: {e}") from e
     finally:
-        for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_code_verifier", "youtube_oauth_started_at"):
+        for key in (
+            "youtube_oauth_state",
+            "youtube_oauth_redirect_uri",
+            "youtube_oauth_mode",
+            "youtube_oauth_code_verifier",
+            "youtube_oauth_started_at",
+        ):
             request.session.pop(key, None)
 
 
@@ -561,7 +584,13 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
     redirect_uri = request.session.get("youtube_oauth_redirect_uri")
     code_verifier = request.session.get("youtube_oauth_code_verifier")
     started_at = int(request.session.get("youtube_oauth_started_at") or 0)
-    for key in ("youtube_oauth_state", "youtube_oauth_redirect_uri", "youtube_oauth_mode", "youtube_oauth_code_verifier", "youtube_oauth_started_at"):
+    for key in (
+        "youtube_oauth_state",
+        "youtube_oauth_redirect_uri",
+        "youtube_oauth_mode",
+        "youtube_oauth_code_verifier",
+        "youtube_oauth_started_at",
+    ):
         request.session.pop(key, None)
 
     if error:
@@ -602,7 +631,7 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(UTC).isoformat()}
 
 
 @app.get("/api/logs")
@@ -611,10 +640,10 @@ def api_logs(lines: int = 100, _: str = Depends(require_auth)):
     if not os.path.exists(LOG_PATH):
         return {"logs": []}
     try:
-        with open(LOG_PATH, "r", encoding="utf-8", errors="ignore") as f:
+        with open(LOG_PATH, encoding="utf-8", errors="ignore") as f:
             all_lines = f.readlines()
         tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-        return {"logs": [l.rstrip("\n") for l in tail]}
+        return {"logs": [line.rstrip("\n") for line in tail]}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -658,24 +687,28 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
     if db.is_processed(vod_id):
         return JSONResponse(status_code=409, content={"error": "Este VOD ya fue procesado", "vod_id": vod_id})
 
-    source_meta = json.dumps({
-        "type": "manual_upload",
-        "custom_title": custom_title,
-        "privacy": privacy,
-        "tags": tags,
-    })
+    source_meta = json.dumps(
+        {
+            "type": "manual_upload",
+            "custom_title": custom_title,
+            "privacy": privacy,
+            "tags": tags,
+        }
+    )
 
     db.add_vod(vod_id, channel, video_id, source_meta, tracker_url=tracker_url, download_url=download_url)
     db.increment_stat(channel, "detected")
-    db.enqueue({
-        "vod_id": vod_id,
-        "channel": channel,
-        "video_id": video_id,
-        "source": source_meta,
-        "start_time": start_time,
-        "tracker_url": tracker_url,
-        "download_url": download_url,
-    })
+    db.enqueue(
+        {
+            "vod_id": vod_id,
+            "channel": channel,
+            "video_id": video_id,
+            "source": source_meta,
+            "start_time": start_time,
+            "tracker_url": tracker_url,
+            "download_url": download_url,
+        }
+    )
 
     return {"status": "queued", "vod_id": vod_id, "channel": channel, "video_id": video_id}
 
@@ -683,6 +716,7 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
 # =============================================================================
 # Pages
 # =============================================================================
+
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard_page(request: Request):
@@ -708,4 +742,5 @@ MAIN_HTML = _load_template("dashboard.html")
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8080)
