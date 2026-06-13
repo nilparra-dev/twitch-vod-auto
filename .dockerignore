@@ -32,6 +32,14 @@ ffmpeg_temp/
 ffmpeg.zip
 bin/
 
+# Node / frontend (se compila dentro de la imagen)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Brainstorm / specs locales
+.superpowers/
+
 # DB (se monta como volumen en Docker)
 data/
 certbot-data/

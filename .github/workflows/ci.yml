@@ -41,13 +41,49 @@ jobs:
       - name: Tests with coverage
         run: python -m pytest --cov=. --cov-report=term-missing
 
-  docker-build:
-    name: Docker build
+  frontend:
+    name: Frontend lint, test and build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build image
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build pipeline image
         run: docker build -t twitch-vod-auto:ci .
+
+      - name: Build dashboard image
+        run: docker build -f Dockerfile.dashboard -t twitch-vod-dashboard:ci .
