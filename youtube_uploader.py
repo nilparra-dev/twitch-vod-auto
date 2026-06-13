@@ -1,6 +1,5 @@
 import logging
 import os
-import pickle
 import ssl
 import time
 
@@ -11,6 +10,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from httplib2 import HttpLib2Error
+
+from credentials_store import load_credentials, save_credentials
 
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
@@ -88,11 +89,7 @@ class YouTubeUploader:
         ) from exc
 
     def _get_authenticated_service(self):
-        credentials = None
-
-        if os.path.exists(self.credentials_file):
-            with open(self.credentials_file, "rb") as token:
-                credentials = pickle.load(token)
+        credentials = load_credentials(self.credentials_file)
 
         if not credentials or not credentials.valid:
             if credentials and credentials.expired and credentials.refresh_token:
@@ -115,8 +112,7 @@ class YouTubeUploader:
                 )
                 credentials = flow.run_local_server(port=0)
 
-            with open(self.credentials_file, "wb") as token:
-                pickle.dump(credentials, token)
+            save_credentials(credentials, self.credentials_file)
 
         return build("youtube", "v3", credentials=credentials, cache_discovery=False)
 

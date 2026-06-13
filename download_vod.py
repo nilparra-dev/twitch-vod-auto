@@ -176,7 +176,7 @@ def _build_command(
     is_windows: bool,
 ) -> tuple:
     use_npx = download_cfg.get("use_npx", True)
-    git_bash = download_cfg.get("git_bash_path")
+    git_bash = os.getenv("GIT_BASH_PATH") or download_cfg.get("git_bash_path")
     twitch_dlp_args = _extra_twitch_dlp_args(download_cfg)
 
     if use_npx and git_bash and is_windows:
@@ -203,7 +203,7 @@ def _build_command(
 
 def _build_merge_command(base_path: Path, ffmpeg_folder: str, download_cfg: dict, is_windows: bool) -> tuple:
     use_npx = download_cfg.get("use_npx", True)
-    git_bash = download_cfg.get("git_bash_path")
+    git_bash = os.getenv("GIT_BASH_PATH") or download_cfg.get("git_bash_path")
     base = str(base_path)
 
     if use_npx and git_bash and is_windows:

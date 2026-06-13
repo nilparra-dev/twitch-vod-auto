@@ -4,6 +4,7 @@ import time
 import json
 import logging
 import queue
+import signal
 import threading
 import traceback
 import subprocess
@@ -683,10 +684,28 @@ class AutoPipeline:
                 self.db.enqueue(s)
                 log.info("[Pipeline] Encolado en DB para descarga: %s", s["vod_id"])
 
+    def _install_signal_handlers(self):
+        """Apagado graceful: SIGTERM/SIGINT detienen el bucle y drenan las colas.
+
+        Necesario para que `docker stop` (SIGTERM) cierre limpiamente en vez de
+        ser forzado con SIGKILL tras el periodo de gracia.
+        """
+        def _handler(signum, _frame):
+            log.info("[Pipeline] Senal %s recibida; iniciando apagado graceful...", signum)
+            self.running = False
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                # No estamos en el hilo principal o la plataforma no lo soporta.
+                pass
+
     def run_loop(self):
         interval = self.config["twitch"]["global"].get("check_interval_minutes", 30)
         interval_seconds = interval * 60
 
+        self._install_signal_handlers()
         self._start_workers()
 
         log.info("[Pipeline] Bucle automatico iniciado. Intervalo: %d min", interval)
@@ -705,20 +724,29 @@ class AutoPipeline:
 
             if self.running:
                 log.info("[Pipeline] Proximo chequeo en %d minutos...", interval)
-                try:
-                    time.sleep(interval_seconds)
-                except KeyboardInterrupt:
-                    log.info("[Pipeline] Detenido por usuario.")
-                    self.running = False
+                # Sleep en tramos cortos para reaccionar rapido a SIGTERM/SIGINT.
+                slept = 0
+                while slept < interval_seconds and self.running:
+                    try:
+                        time.sleep(min(5, interval_seconds - slept))
+                    except KeyboardInterrupt:
+                        log.info("[Pipeline] Detenido por usuario.")
+                        self.running = False
+                        break
+                    slept += 5
 
         log.info("[Pipeline] Esperando que terminen workers...")
         self.download_queue.join()
         self.upload_queue.join()
         log.info("[Pipeline] Apagado completo.")
 
-if __name__ == "__main__":
+def main():
     pipeline = AutoPipeline(os.getenv("CONFIG_PATH", "config.json"))
     if len(sys.argv) > 1 and sys.argv[1] == "--once":
         pipeline.run_once()
     else:
         pipeline.run_loop()
+
+
+if __name__ == "__main__":
+    main()
