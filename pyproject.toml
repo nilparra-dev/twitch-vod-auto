@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twitch-vod-auto"
+version = "1.0.0"
+description = "Pipeline automatizado: detecta VODs de Twitch, los descarga y los sube a YouTube, con dashboard de administracion."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "nparra2" }]
+dependencies = [
+    "requests>=2.32.0,<3.0",
+    "beautifulsoup4>=4.12.0,<5.0",
+    "tqdm>=4.66.0,<5.0",
+    "google-auth>=2.30.0,<3.0",
+    "google-auth-oauthlib>=1.2.0,<2.0",
+    "google-auth-httplib2>=0.2.0,<1.0",
+    "google-api-python-client>=2.130.0,<3.0",
+    "fastapi>=0.111.0,<1.0",
+    "uvicorn[standard]>=0.30.0,<1.0",
+    "python-dotenv>=1.0.0,<2.0",
+    "itsdangerous>=2.1.0,<3.0",
+    "python-multipart>=0.0.9,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+    "mypy>=1.10.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "pre-commit>=3.7.0",
+    "types-requests",
+]
+
+[project.scripts]
+vod-pipeline = "auto_pipeline:main"
+
+[tool.setuptools]
+py-modules = [
+    "auto_pipeline",
+    "credentials_store",
+    "dashboard",
+    "db",
+    "download_vod",
+    "install_ffmpeg",
+    "monitor",
+    "progress",
+    "retry",
+    "thumbnail",
+    "twitch_api",
+    "utils",
+    "verify_ffmpeg",
+    "youtube_uploader",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+# B008: FastAPI usa llamadas (Depends/Form) como defaults a proposito.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_redundant_casts = true
+no_implicit_optional = false
+check_untyped_defs = false
+exclude = ["build/", "dist/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+omit = ["tests/*", "install_ffmpeg.py", "verify_ffmpeg.py"]
