@@ -45,6 +45,12 @@ _login_attempts = {}
 if not SECRET_KEY:
     SECRET_KEY = secrets.token_urlsafe(32)
     logging.warning("[Auth] SECRET_KEY no definido, usando aleatorio (sesiones se invalidan al reiniciar)")
+elif len(SECRET_KEY) < 32:
+    logging.warning(
+        "[Auth] SECRET_KEY demasiado corta (%d chars). La cookie de sesion se firma con ella; "
+        "usa una clave aleatoria de >=32 chars para evitar que se pueda forjar.",
+        len(SECRET_KEY),
+    )
 
 if not ADMIN_PASSWORD:
     if not ALLOW_RANDOM_ADMIN_PASSWORD:
@@ -55,7 +61,8 @@ if not ADMIN_PASSWORD:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(name)-12s | %(message)s")
 log = logging.getLogger("dashboard")
 
-app = FastAPI(title="Twitch VOD Auto - Admin", docs_url=None, redoc_url=None)
+# openapi_url=None: no exponer el esquema OpenAPI (mapa de la API) sin autenticar.
+app = FastAPI(title="Twitch VOD Auto - Admin", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
@@ -213,10 +220,18 @@ def require_auth(request: Request):
     return user
 
 
+# Header de confianza para identificar al cliente (rate-limit de login).
+# nginx fija X-Real-IP a la IP de conexion sobrescribiendo lo que mande el
+# cliente y, con `real_ip` + CF-Connecting-IP, esa IP es la del cliente real
+# tras Cloudflare. NO usamos X-Forwarded-For: su primer valor lo controla el
+# cliente y permitia saltarse el rate-limit rotandolo en cada peticion.
+TRUSTED_IP_HEADER = os.getenv("TRUSTED_IP_HEADER", "x-real-ip").lower()
+
+
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
+    value = request.headers.get(TRUSTED_IP_HEADER, "").strip()
+    if value:
+        return value.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
