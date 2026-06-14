@@ -34,6 +34,39 @@ class DashboardRoutingTests(unittest.TestCase):
         if res.status_code == 200:
             self.assertIn("text/html", res.headers.get("content-type", ""))
 
+    def test_openapi_schema_disabled(self):
+        # F2: el esquema OpenAPI no debe exponerse sin autenticar.
+        self.assertIsNone(dashboard.app.openapi_url)
+        res = self.client.get("/openapi.json")
+        self.assertNotIn(b'"openapi"', res.content)
+        self.assertNotIn(b'"paths"', res.content)
+
+
+class LoginRateLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(dashboard.app)
+
+    def test_rate_limit_keys_on_trusted_ip_not_forwarded_for(self):
+        # F1: rotar X-Forwarded-For NO debe saltarse el límite; se clava la
+        # IP de confianza (X-Real-IP, que en prod fija nginx).
+        ip = "203.0.113.77"
+        last = None
+        for i in range(9):
+            last = self.client.post(
+                "/api/login",
+                data={"user": "x", "password": "y"},
+                headers={"X-Real-IP": ip, "X-Forwarded-For": f"10.0.0.{i}"},
+            )
+        self.assertEqual(last.status_code, 429)
+
+    def test_distinct_trusted_ip_not_limited(self):
+        res = self.client.post(
+            "/api/login",
+            data={"user": "x", "password": "y"},
+            headers={"X-Real-IP": "203.0.113.201"},
+        )
+        self.assertEqual(res.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

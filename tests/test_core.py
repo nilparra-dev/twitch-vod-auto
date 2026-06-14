@@ -265,6 +265,34 @@ class CredentialsStoreTests(unittest.TestCase):
         loaded = load_credentials(path)
         self.assertEqual(loaded.refresh_token, "refresh-token")
 
+    def test_saves_in_place_when_rename_busy(self):
+        """En bind mount de archivo unico, os.replace falla con EBUSY (Errno 16).
+
+        save_credentials debe degradar a escritura in situ y dejar las
+        credenciales legibles sin restos de .tmp.
+        """
+        import errno
+        import json
+        from unittest import mock
+
+        import credentials_store
+        from credentials_store import load_credentials, save_credentials
+
+        path = os.path.join(self.tmp.name, "youtube_credentials.pkl")
+
+        def busy_replace(src, dst):
+            raise OSError(errno.EBUSY, "Device or resource busy")
+
+        with mock.patch.object(credentials_store.os, "replace", side_effect=busy_replace):
+            save_credentials(self._make_credentials(), path)
+
+        with open(path, encoding="utf-8") as fh:
+            self.assertIn("refresh_token", json.load(fh))
+        self.assertFalse(os.path.exists(f"{path}.tmp"))
+
+        loaded = load_credentials(path)
+        self.assertEqual(loaded.refresh_token, "refresh-token")
+
 
 if __name__ == "__main__":
     unittest.main()

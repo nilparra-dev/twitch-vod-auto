@@ -9,6 +9,7 @@ Evitar `pickle` para credenciales elimina el riesgo de deserializacion
 arbitraria y la fragilidad entre versiones de librerias.
 """
 
+import errno
 import json
 import logging
 import os
@@ -62,7 +63,33 @@ def save_credentials(credentials, path: str):
         fh.write(payload)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp_path, path)
+
+    try:
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        # En un bind mount de Docker de archivo unico, `path` es el punto de
+        # montaje y renombrar sobre el devuelve EBUSY (Errno 16); EXDEV/EINVAL
+        # aparecen cuando tmp y destino estan en sistemas de archivos distintos.
+        # En estos casos no hay rename atomico posible: escribimos in situ sobre
+        # el inodo existente para que el cambio se propague al archivo del host.
+        if exc.errno not in (errno.EBUSY, errno.EXDEV, errno.EINVAL):
+            raise
+        log.warning(
+            "Rename atomico no disponible (%s); escribiendo credenciales in situ en %s.",
+            errno.errorcode.get(exc.errno, exc.errno),
+            path,
+        )
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
     try:
         os.chmod(path, 0o600)
     except OSError:
