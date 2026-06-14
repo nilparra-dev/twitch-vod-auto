@@ -294,5 +294,112 @@ class CredentialsStoreTests(unittest.TestCase):
         self.assertEqual(loaded.refresh_token, "refresh-token")
 
 
+class TwitchApiVideoLookupTests(unittest.TestCase):
+    @staticmethod
+    def _client(request_impl):
+        from twitch_api import TwitchAPIClient
+
+        client = TwitchAPIClient.__new__(TwitchAPIClient)
+        client._request = request_impl
+        return client
+
+    def test_get_video_by_id_parses_created_at(self):
+        from datetime import datetime
+
+        def fake_request(endpoint, params):
+            self.assertEqual(endpoint, "/videos")
+            self.assertEqual(params, {"id": "12345"})
+            return {"data": [{"id": "12345", "title": "T", "created_at": "2024-03-10T18:30:00Z", "duration": "2h5m"}]}
+
+        info = self._client(fake_request).get_video_by_id("12345")
+
+        self.assertEqual(info["video_id"], "12345")
+        self.assertEqual(info["created_at"], "2024-03-10T18:30:00Z")
+        expected = int(datetime.fromisoformat("2024-03-10T18:30:00+00:00").timestamp())
+        self.assertEqual(info["start_time"], expected)
+
+    def test_get_video_by_id_returns_none_when_missing(self):
+        self.assertIsNone(self._client(lambda endpoint, params: {"data": []}).get_video_by_id("nope"))
+
+
+class AutoPipelineStreamDateTests(unittest.TestCase):
+    @staticmethod
+    def _pipeline(twitch_client=None):
+        from auto_pipeline import AutoPipeline
+
+        p = AutoPipeline.__new__(AutoPipeline)
+        p.twitch_client = twitch_client
+        return p
+
+    def test_uses_valid_start_time_without_api(self):
+        from datetime import UTC, datetime
+
+        ts = int(datetime(2024, 5, 1, tzinfo=UTC).timestamp())
+
+        class BoomClient:
+            def get_video_by_id(self, video_id):
+                raise AssertionError("no debe llamar a la API con start_time valido")
+
+        dt = self._pipeline(BoomClient())._resolve_stream_date({"start_time": ts, "video_id": "1"})
+
+        self.assertEqual((dt.year, dt.month, dt.day), (2024, 5, 1))
+
+    def test_resolves_via_api_when_start_time_invalid(self):
+        from datetime import UTC, datetime
+
+        class FakeClient:
+            def get_video_by_id(self, video_id):
+                return {
+                    "start_time": int(datetime(2023, 1, 15, tzinfo=UTC).timestamp()),
+                    "created_at": "2023-01-15T00:00:00Z",
+                }
+
+        dt = self._pipeline(FakeClient())._resolve_stream_date({"start_time": 0, "video_id": "987654321"})
+
+        self.assertEqual((dt.year, dt.month, dt.day), (2023, 1, 15))
+
+    def test_falls_back_to_now_without_client(self):
+        from datetime import UTC, datetime
+
+        dt = self._pipeline(None)._resolve_stream_date({"start_time": 0, "video_id": "1"})
+
+        self.assertEqual(dt.date(), datetime.now(UTC).date())
+
+
+class YouTubeRequestBodyTests(unittest.TestCase):
+    def test_includes_recording_date_when_provided(self):
+        from datetime import UTC, datetime
+
+        body, part = YouTubeUploader._build_request_body(
+            title="T",
+            description="D",
+            tags=["a"],
+            category_id="20",
+            privacy_status="private",
+            made_for_kids=False,
+            default_language=None,
+            recording_date=datetime(2024, 3, 10, 18, 30, tzinfo=UTC),
+        )
+
+        self.assertEqual(body["recordingDetails"]["recordingDate"], "2024-03-10T18:30:00Z")
+        self.assertIn("recordingDetails", part.split(","))
+        self.assertIn("snippet", part.split(","))
+
+    def test_omits_recording_date_when_none(self):
+        body, part = YouTubeUploader._build_request_body(
+            title="T",
+            description="D",
+            tags=None,
+            category_id="20",
+            privacy_status="private",
+            made_for_kids=False,
+            default_language=None,
+            recording_date=None,
+        )
+
+        self.assertNotIn("recordingDetails", body)
+        self.assertNotIn("recordingDetails", part.split(","))
+
+
 if __name__ == "__main__":
     unittest.main()

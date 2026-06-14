@@ -74,11 +74,14 @@ def _resolve_stream_date(self, stream_info: dict) -> datetime
   al `part`. Formato: `dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")`.
 - El pipeline pasa la fecha resuelta como `recording_date`.
 
-### 4. `utils.parse_twitch_vod_url` — no fabricar fecha del ID
+### 4. `utils.parse_twitch_vod_url` — sin cambios
 
-- Para URLs/IDs de Twitch (y trackers que solo aportan el id), dejar de derivar
-  `start_time` del `video_id`. Poner `start_time = 0`; la fecha real la resuelve
-  el pipeline vía API. El `vod_id` pasa a `video:{channel}_{video_id}_0`.
+Descartado tras revisar: la ventana de plausibilidad de `_resolve_stream_date`
+(2011..ahora) ya neutraliza cualquier `start_time` fabricado del `video_id`
+(todos los IDs reales de Twitch caen fuera de esa ventana: los antiguos antes de
+2011, los actuales ~2e9+ en el futuro). Cambiar `parse_twitch_vod_url` además
+rompería la identidad del `vod_id` (`video:{ch}_{id}_{start_time}`) y sus tests.
+El arreglo real lo hace la comprobación de plausibilidad en el pipeline.
 
 ## Manejo de errores
 

@@ -15,12 +15,16 @@ from db import PipelineDB
 from download_vod import download_vod_with_retry
 from monitor import VodMonitor
 from progress import DownloadProgress
+from twitch_api import TwitchAPIClient
 from utils import get_file_size_mb, sanitize_filename, setup_logging
 from youtube_uploader import YouTubeAuthError, YouTubeUploader
 
 log = logging.getLogger("pipeline")
 MIN_REUSABLE_DOWNLOAD_BYTES = 10 * 1024 * 1024
 REUSABLE_VIDEO_EXTENSIONS = {".mp4"}
+# Twitch existe desde 2011; cualquier start_time fuera de [2011-01-01, ahora+1d]
+# no es una fecha de stream plausible (suele ser un video_id mal interpretado).
+MIN_PLAUSIBLE_STREAM_EPOCH = int(datetime(2011, 1, 1, tzinfo=UTC).timestamp())
 
 
 class AutoPipeline:
@@ -35,6 +39,18 @@ class AutoPipeline:
         # DB
         self.db = PipelineDB(self.config["monitoring"]["db_path"])
         self.monitor = VodMonitor(self.config, self.db)
+
+        # Cliente Twitch para resolver la fecha real del stream (created_at).
+        self.twitch_client = None
+        if self.config.get("twitch_api", {}).get("enabled", True):
+            try:
+                client = TwitchAPIClient()
+                self.twitch_client = client if client.client_id else None
+                if self.twitch_client is None:
+                    log.warning("[Pipeline] TWITCH_CLIENT_ID no configurado; no se podra resolver la fecha real del stream")
+            except Exception as e:  # pragma: no cover - defensivo
+                log.warning("[Pipeline] No se pudo inicializar TwitchAPIClient: %s", e)
+
         self.uploader = None
         self.uploader_credentials_file = None
         self.uploader_credentials_mtime = None
@@ -165,27 +181,60 @@ class AutoPipeline:
             merged["custom_title"] = source_meta["custom_title"]
         return merged
 
-    def _safe_stream_date(self, start_time):
+    @staticmethod
+    def _epoch_to_plausible_date(start_time):
+        """Devuelve el datetime UTC si `start_time` es una fecha de stream plausible, si no None."""
         try:
-            if not start_time or start_time <= 0 or start_time > 9_999_999_999:
-                return datetime.now(UTC)
-            return datetime.fromtimestamp(start_time, tz=UTC)
+            ts = int(start_time)
+        except (TypeError, ValueError):
+            return None
+        now_epoch = int(datetime.now(UTC).timestamp())
+        if ts < MIN_PLAUSIBLE_STREAM_EPOCH or ts > now_epoch + 86400:
+            return None
+        try:
+            return datetime.fromtimestamp(ts, tz=UTC)
         except (ValueError, OSError, OverflowError):
-            return datetime.now(UTC)
+            return None
 
-    def _generate_title(self, stream_info: dict, yt_cfg: dict) -> str:
+    def _resolve_stream_date(self, stream_info: dict) -> datetime:
+        """Resuelve la fecha real de emision del stream.
+
+        1) start_time si es un epoch plausible; 2) Twitch API por video_id
+        (created_at); 3) ahora() como ultimo recurso, con aviso.
+        """
+        dt = self._epoch_to_plausible_date(stream_info.get("start_time", 0))
+        if dt is not None:
+            return dt
+
+        video_id = stream_info.get("video_id")
+        client = getattr(self, "twitch_client", None)
+        if client and video_id:
+            try:
+                info = client.get_video_by_id(str(video_id))
+                if info:
+                    dt = self._epoch_to_plausible_date(info.get("start_time", 0))
+                    if dt is not None:
+                        return dt
+            except Exception as e:
+                log.warning("[Pipeline] No se pudo obtener la fecha del stream desde Twitch API (%s): %s", video_id, e)
+
+        log.warning(
+            "[Pipeline] Sin fecha real de stream para %s; usando la fecha actual.",
+            stream_info.get("vod_id") or video_id,
+        )
+        return datetime.now(UTC)
+
+    def _generate_title(self, stream_info: dict, yt_cfg: dict, dt: datetime) -> str:
         if yt_cfg.get("custom_title"):
             return yt_cfg["custom_title"][:100]
         channel = stream_info["channel"]
-        dt = self._safe_stream_date(stream_info.get("start_time", 0))
         date_str = f"{dt.day}/{dt.month}/{dt.year}"
         prefix = yt_cfg.get("prefix_title") or yt_cfg.get("default_prefix_title") or ""
         title = f"{prefix} {channel} twitch vod - {date_str}".strip()
         return title[:100]
 
-    def _generate_description(self, stream_info: dict) -> str:
+    def _generate_description(self, stream_info: dict, dt: datetime) -> str:
         channel = stream_info["channel"]
-        dt = self._safe_stream_date(stream_info.get("start_time", 0))
         return (
             f"Stream de {channel} del {dt.strftime('%d/%m/%Y')}.\n\n"
             f"Video ID Twitch: {stream_info['video_id']}\n"
@@ -514,8 +563,9 @@ class AutoPipeline:
             uploaded = False
             try:
                 yt_cfg = self._apply_manual_overrides(self._get_channel_config(channel), source_meta)
-                title = self._generate_title(stream_info, yt_cfg)
-                description = self._generate_description(stream_info)
+                stream_date = self._resolve_stream_date(stream_info)
+                title = self._generate_title(stream_info, yt_cfg, stream_date)
+                description = self._generate_description(stream_info, stream_date)
 
                 # Thumbnail
                 thumb_path = str(Path(file_path).with_suffix(".jpg"))
@@ -579,6 +629,7 @@ class AutoPipeline:
                     thumbnail_path=thumb_path,
                     chunk_size_mb=yt_cfg.get("upload_chunk_size_mb", 64),
                     progress_callback=on_upload_progress,
+                    recording_date=stream_date,
                 )
 
                 youtube_id = response["id"]
