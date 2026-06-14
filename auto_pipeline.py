@@ -47,7 +47,9 @@ class AutoPipeline:
                 client = TwitchAPIClient()
                 self.twitch_client = client if client.client_id else None
                 if self.twitch_client is None:
-                    log.warning("[Pipeline] TWITCH_CLIENT_ID no configurado; no se podra resolver la fecha real del stream")
+                    log.warning(
+                        "[Pipeline] TWITCH_CLIENT_ID no configurado; no se podra resolver la fecha real del stream"
+                    )
             except Exception as e:  # pragma: no cover - defensivo
                 log.warning("[Pipeline] No se pudo inicializar TwitchAPIClient: %s", e)
 
