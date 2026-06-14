@@ -66,6 +66,34 @@ class TwitchAPIClient:
         data = self._request("/videos", {"user_id": user_id, "first": limit, "period": period, "type": "archive"})
         return data.get("data", [])
 
+    @staticmethod
+    def _created_at_to_epoch(created_at: str) -> int:
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except Exception:
+            return 0
+
+    def get_video_by_id(self, video_id: str) -> dict | None:
+        """Obtiene un VOD concreto por su id. Devuelve None si no existe.
+
+        `created_at` es la fecha real de emision del stream; `start_time` es ese
+        instante en epoch UTC.
+        """
+        data = self._request("/videos", {"id": video_id})
+        videos = data.get("data", [])
+        if not videos:
+            return None
+        v = videos[0]
+        created = v.get("created_at", "")
+        return {
+            "video_id": v.get("id", video_id),
+            "title": v.get("title", ""),
+            "created_at": created,
+            "start_time": self._created_at_to_epoch(created),
+            "duration_sec": self._parse_duration(v.get("duration", "0s")),
+        }
+
     def get_recent_archives(self, login: str, limit: int = 10) -> list[dict]:
         """
         Obtiene los ultimos VODs (archives) de un canal.

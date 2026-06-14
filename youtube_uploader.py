@@ -2,6 +2,7 @@ import logging
 import os
 import ssl
 import time
+from datetime import UTC
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -113,25 +114,23 @@ class YouTubeUploader:
 
         return build("youtube", "v3", credentials=credentials, cache_discovery=False)
 
-    def upload_video(
-        self,
-        file_path: str,
+    @staticmethod
+    def _build_request_body(
+        *,
         title: str,
-        description: str = "",
-        tags: list = None,
-        category_id: str = "20",
-        privacy_status: str = "private",
+        description: str,
+        tags: list,
+        category_id: str,
+        privacy_status: str,
+        made_for_kids: bool,
         default_language: str = None,
-        made_for_kids: bool = False,
-        thumbnail_path: str = None,
-        chunk_size_mb: int = DEFAULT_UPLOAD_CHUNK_SIZE_MB,
-        progress_callback=None,
+        recording_date=None,
     ):
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"No se encontro: {file_path}")
+        """Construye (body, part) para videos().insert.
 
-        file_size_mb = os.path.getsize(file_path) / 1024 / 1024
-        chunk_size = self._chunk_size_bytes(chunk_size_mb)
+        Si `recording_date` (datetime) no es None, fija recordingDetails.recordingDate
+        a la fecha real de grabacion en RFC3339 UTC para que YouTube no use la de subida.
+        """
         body = {
             "snippet": {
                 "title": title,
@@ -146,6 +145,41 @@ class YouTubeUploader:
         }
         if default_language:
             body["snippet"]["defaultLanguage"] = default_language
+        if recording_date is not None:
+            iso = recording_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body["recordingDetails"] = {"recordingDate": iso}
+        return body, ",".join(body.keys())
+
+    def upload_video(
+        self,
+        file_path: str,
+        title: str,
+        description: str = "",
+        tags: list = None,
+        category_id: str = "20",
+        privacy_status: str = "private",
+        default_language: str = None,
+        made_for_kids: bool = False,
+        thumbnail_path: str = None,
+        chunk_size_mb: int = DEFAULT_UPLOAD_CHUNK_SIZE_MB,
+        progress_callback=None,
+        recording_date=None,
+    ):
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"No se encontro: {file_path}")
+
+        file_size_mb = os.path.getsize(file_path) / 1024 / 1024
+        chunk_size = self._chunk_size_bytes(chunk_size_mb)
+        body, part = self._build_request_body(
+            title=title,
+            description=description,
+            tags=tags,
+            category_id=category_id,
+            privacy_status=privacy_status,
+            made_for_kids=made_for_kids,
+            default_language=default_language,
+            recording_date=recording_date,
+        )
 
         log.info(
             "Subiendo a YouTube: %s | %.1f MB | chunk=%d MB | Titulo: %s | Privacidad: %s",
@@ -157,7 +191,7 @@ class YouTubeUploader:
         )
 
         insert_request = self.service.videos().insert(
-            part=",".join(body.keys()),
+            part=part,
             body=body,
             media_body=MediaFileUpload(
                 file_path,
