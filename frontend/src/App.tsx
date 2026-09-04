@@ -9,6 +9,7 @@ import { ManualUpload } from "@/pages/ManualUpload";
 import { Overview } from "@/pages/Overview";
 import { Queue } from "@/pages/Queue";
 import { Vods } from "@/pages/Vods";
+import { WatchVod } from "@/pages/WatchVod";
 import { YouTube } from "@/pages/YouTube";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="/vods" element={<Vods />} />
         <Route path="/queue" element={<Queue />} />
         <Route path="/upload" element={<ManualUpload />} />
+        <Route path="/watch" element={<WatchVod />} />
         <Route path="/youtube" element={<YouTube />} />
         <Route path="/logs" element={<Logs />} />
       </Route>

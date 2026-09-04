@@ -9,6 +9,32 @@ y los publica en YouTube, con un dashboard web de administración en tiempo real
 - **Publicación**: YouTube Data API v3 (subida resumible con reintentos).
 - **Operación**: dashboard FastAPI con autenticación, progreso en vivo (SSE),
   cola manual, renovación de OAuth de YouTube y visor de logs.
+- **Reproducción sin descarga**: resuelve URLs de Twitch, TwitchTracker,
+  StreamsCharts, SullyGnome y targets `video:...` a playlists M3U8 por calidad.
+
+## CLI M3U8
+
+La beta de la CLI obtiene un enlace reproducible sin descargar el VOD y se
+ejecuta sin instalación:
+
+```bash
+npx twitch-vod-m3u8@beta 2434567890
+npx twitch-vod-m3u8@beta 51582913581 --channel nombre_canal
+npx twitch-vod-m3u8@beta "https://twitchtracker.com/canal/streams/51582913581"
+npx twitch-vod-m3u8@beta "video:canal_51582913581_1721686515" --open vlc
+```
+
+Durante el desarrollo:
+
+```bash
+npm install
+npm run build
+node dist/cli.js --help
+```
+
+Opciones principales: `--quality 720p60`, `--all`, `--json`, `--copy` y
+`--open`. Si solo se proporciona el ID de un stream oculto, el modo interactivo
+pregunta el canal y busca su fecha en SullyGnome.
 
 ---
 
@@ -92,6 +118,19 @@ python auto_pipeline.py --once     # un solo ciclo de monitoreo
 uvicorn dashboard:app --port 8080  # dashboard en http://localhost:8080
 ```
 
+### Ver un VOD sin descargarlo
+
+En el dashboard, abre **Ver VOD** y pega una de estas entradas:
+
+- ID o URL de un VOD público de Twitch.
+- URL de una emisión en TwitchTracker, StreamsCharts o SullyGnome.
+- Target completo `video:canal_streamId_timestamp` para un VOD oculto.
+
+La aplicación busca las calidades que Twitch todavía conserva y devuelve sus
+enlaces M3U8. Puedes copiarlos y abrirlos en VLC desde **Medio → Abrir ubicación
+de red**. Un ID de stream oculto aislado no contiene el canal ni la fecha de
+inicio necesarios; en ese caso usa la URL del tracker o el target `video:...`.
+
 ## Configuración
 
 - **`config.json`** — canales a monitorear, fuentes, opciones de descarga y
@@ -142,4 +181,4 @@ Docker en cada PR y push.
 
 ## Licencia
 
-Software propietario. Ver [`LICENSE`](LICENSE).
+MIT. Ver [`LICENSE`](LICENSE).

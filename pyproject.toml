@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Pipeline automatizado: detecta VODs de Twitch, los descarga y los sube a YouTube, con dashboard de administracion."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [{ name = "nparra2" }]
 dependencies = [
     "requests>=2.32.0,<3.0",
@@ -48,6 +48,7 @@ py-modules = [
     "download_vod",
     "install_ffmpeg",
     "monitor",
+    "m3u8_resolver",
     "progress",
     "retry",
     "thumbnail",

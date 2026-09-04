@@ -14,6 +14,10 @@ dist/
 .venv/
 venv/
 
+# Node.js CLI
+node_modules/
+dist/
+
 # Credenciales y datos sensibles
 client_secret*.json
 youtube_credentials.pkl

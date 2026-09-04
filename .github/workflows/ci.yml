@@ -3,14 +3,42 @@ name: CI
 on:
   pull_request:
   push:
-    branches-ignore:
-      - main # main se valida y despliega en deploy-production.yml
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  cli:
+    name: CLI lint, test and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify package
+        run: npm pack --dry-run
+
   lint-and-test:
     name: Lint, type-check and test
     runs-on: ubuntu-latest

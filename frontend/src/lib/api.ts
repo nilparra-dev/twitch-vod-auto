@@ -172,6 +172,25 @@ export interface VodsResponse {
   offset: number;
 }
 
+export interface M3U8Format {
+  id: string;
+  url: string;
+  height: number | null;
+  fps: number | null;
+}
+
+export interface M3U8Result {
+  kind: "public" | "hidden";
+  source: string;
+  channel: string | null;
+  stream_id: string | null;
+  video_id: string | null;
+  started_at: string | null;
+  canonical_target: string | null;
+  master_url?: string;
+  formats: M3U8Format[];
+}
+
 // ---- Endpoints ----
 
 export const api = {
@@ -221,6 +240,9 @@ export const api = {
     privacy?: string;
     tags?: string[];
   }) => request<{ status: string; vod_id: string }>("/api/manual_upload", jsonInit("POST", payload)),
+
+  resolveM3U8: (input: string) =>
+    request<M3U8Result>("/api/m3u8/resolve", jsonInit("POST", { input })),
 
   youtubeStatus: () => request<YouTubeStatus>("/api/youtube/oauth/status"),
   youtubeStart: () =>

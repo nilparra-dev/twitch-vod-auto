@@ -4,6 +4,7 @@ import {
   ListVideo,
   LogOut,
   ScrollText,
+  Tv,
   Upload,
   Youtube,
 } from "lucide-react";
@@ -19,6 +20,7 @@ const NAV = [
   { to: "/", label: "Resumen", icon: LayoutDashboard, end: true },
   { to: "/vods", label: "VODs", icon: Film },
   { to: "/queue", label: "Cola", icon: ListVideo },
+  { to: "/watch", label: "Ver VOD", icon: Tv },
   { to: "/upload", label: "Subida manual", icon: Upload },
   { to: "/youtube", label: "YouTube", icon: Youtube },
   { to: "/logs", label: "Logs", icon: ScrollText },

@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from credentials_store import load_credentials, save_credentials
 from db import PipelineDB
+from m3u8_resolver import M3U8ResolveError, M3U8Resolver
 from progress import DownloadProgress
 from utils import parse_twitch_vod_url
 from youtube_uploader import SCOPES
@@ -470,6 +471,17 @@ def api_health(_: str = Depends(require_auth)):
         "log_size_bytes": log_size,
         "uptime": datetime.now(UTC).isoformat(),
     }
+
+
+@app.post("/api/m3u8/resolve")
+def api_resolve_m3u8(payload: dict, _: str = Depends(require_auth)):
+    value = payload.get("input")
+    if not isinstance(value, str):
+        raise HTTPException(422, "El campo input es obligatorio")
+    try:
+        return M3U8Resolver().resolve(value)
+    except M3U8ResolveError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/youtube/oauth/status")

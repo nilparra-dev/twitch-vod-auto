@@ -1,0 +1,43 @@
+{
+  "name": "twitch-vod-m3u8",
+  "version": "0.1.0-beta.0",
+  "description": "Resolve public and hidden Twitch VODs to playable M3U8 URLs",
+  "type": "module",
+  "bin": {
+    "twitch-m3u8": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.cli.json",
+    "typecheck": "tsc -p tsconfig.cli.json --noEmit",
+    "test": "npm run build && node --test cli/test/*.test.mjs",
+    "prepublishOnly": "npm run test && npm run build"
+  },
+  "keywords": [
+    "twitch",
+    "vod",
+    "m3u8",
+    "hls",
+    "hidden-vod"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nilparra-dev/twitch-vod-auto.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nilparra-dev/twitch-vod-auto/issues"
+  },
+  "homepage": "https://github.com/nilparra-dev/twitch-vod-auto#readme",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.2"
+  }
+}

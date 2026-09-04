@@ -6,6 +6,8 @@
 *.jpg binary
 *.jpeg binary
 *.mp4 binary
-*.ts binary
+# TypeScript source is text. Twitch video fragments with the same extension are ignored.
+*.ts text eol=lf
+*.tsx text eol=lf
 *.pkl binary
 *.zip binary
