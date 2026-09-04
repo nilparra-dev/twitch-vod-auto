@@ -18,7 +18,7 @@ venv/
 node_modules/
 dist/
 
-# Credenciales y datos sensibles
+# Credentials and sensitive data
 client_secret*.json
 youtube_credentials.pkl
 twitch_cookies.txt
@@ -27,28 +27,29 @@ twitch_cookies.txt
 config.prod.local.json
 config.local.json
 
-# Logs y datos de proceso
+# Logs and process data
 logs/
 processed.json
 *.log
 
-# Descargas
+# Downloads
 downloads/
 *.mp4
 *.ts
 *.part
 *.ytdl
 *.jpg
-# El patron *.ts de arriba es para segmentos de video de Twitch; reincluye el
-# codigo fuente TypeScript del frontend (que tambien usa extension .ts).
+# The *.ts pattern above covers Twitch video segments. Keep TypeScript source
+# files in the frontend and CLI.
 !frontend/**/*.ts
+!cli/**/*.ts
 
-# Temporales
+# Temporary files
 ffmpeg_temp/
 ffmpeg.zip
 bin/
 
-# DB y certificados (volumenes locales)
+# Database and certificates stored in local volumes
 data/
 certbot-data/
 certbot-www/
@@ -60,7 +61,7 @@ secrets/
 *.swp
 *.swo
 
-# Sistema operativo
+# Operating system files
 .DS_Store
 Thumbs.db
 

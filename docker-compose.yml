@@ -14,8 +14,8 @@ services:
     environment:
       - CONFIG_PATH=/app/config.json
       - PYTHONUNBUFFERED=1
-    # Para OAuth de YouTube puede necesitar interaccion
-    # Si ya tienes youtube_credentials.pkl generado en local, copialo al volumen
+    # YouTube OAuth may require interaction. Generate youtube_credentials.pkl
+    # locally before mounting it when needed.
 
   dashboard:
     build: .

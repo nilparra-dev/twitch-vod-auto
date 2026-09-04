@@ -101,7 +101,7 @@ function ProgressRow({ p }: { p: Progress }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="truncate font-mono text-xs text-fg">
-          {p.channel || "—"} · {p.video_id}
+          {p.channel || "-"} · {p.video_id}
         </span>
         <span className="shrink-0 text-xs text-muted">
           {p.stage ?? p.status} · {pct.toFixed(0)}%
@@ -129,25 +129,25 @@ export function Overview() {
 
   return (
     <div>
-      <PageHeader title="Resumen" subtitle="Estado del pipeline en tiempo real" />
+      <PageHeader title="Overview" subtitle="Live pipeline status" />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={<Film size={18} />} label="Total" value={s?.total ?? 0} />
         <StatCard
           icon={<CheckCircle2 size={18} />}
-          label="Subidos"
+          label="Uploaded"
           value={s?.uploaded ?? 0}
           tone="text-ok"
         />
         <StatCard
           icon={<Activity size={18} />}
-          label="En cola"
+          label="Queued"
           value={state?.queue_summary.queued ?? 0}
           tone="text-accent"
         />
         <StatCard
           icon={<XCircle size={18} />}
-          label="Fallos"
+          label="Failed"
           value={s?.failed ?? 0}
           tone="text-danger"
         />
@@ -156,7 +156,7 @@ export function Overview() {
       <div className="mt-6 grid gap-5 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Actividad (14 días)</CardTitle>
+            <CardTitle>Activity (14 days)</CardTitle>
           </CardHeader>
           <CardBody className="pt-2">
             {state ? (
@@ -169,12 +169,12 @@ export function Overview() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Descargas activas</CardTitle>
+            <CardTitle>Active jobs</CardTitle>
             {active.length > 0 && <span className="text-xs text-accent">{active.length}</span>}
           </CardHeader>
           <CardBody className="space-y-5">
             {active.length === 0 ? (
-              <EmptyState title="Nada en curso" hint="Las descargas y subidas activas aparecerán aquí." />
+              <EmptyState title="Nothing running" hint="Active downloads and uploads will appear here." />
             ) : (
               active.map((p) => <ProgressRow key={p.vod_id} p={p} />)
             )}
@@ -184,14 +184,14 @@ export function Overview() {
 
       <Card className="mt-5">
         <CardHeader>
-          <CardTitle>VODs recientes</CardTitle>
+          <CardTitle>Recent VODs</CardTitle>
           <Link to="/vods" className="text-xs text-accent hover:underline">
-            Ver todos
+            View all
           </Link>
         </CardHeader>
         <CardBody className="pt-2">
           {recent.length === 0 ? (
-            <EmptyState title="Sin VODs todavía" />
+            <EmptyState title="No VODs yet" />
           ) : (
             <div className="divide-y divide-line">
               {recent.map((v) => (

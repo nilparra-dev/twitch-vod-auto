@@ -17,11 +17,11 @@ import { cn } from "@/lib/utils";
 import { useEvents } from "@/store/events";
 
 const NAV = [
-  { to: "/", label: "Resumen", icon: LayoutDashboard, end: true },
+  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/vods", label: "VODs", icon: Film },
-  { to: "/queue", label: "Cola", icon: ListVideo },
-  { to: "/watch", label: "Ver VOD", icon: Tv },
-  { to: "/upload", label: "Subida manual", icon: Upload },
+  { to: "/queue", label: "Queue", icon: ListVideo },
+  { to: "/watch", label: "Watch VOD", icon: Tv },
+  { to: "/upload", label: "Manual upload", icon: Upload },
   { to: "/youtube", label: "YouTube", icon: Youtube },
   { to: "/logs", label: "Logs", icon: ScrollText },
 ];
@@ -29,9 +29,9 @@ const NAV = [
 function ConnDot() {
   const conn = useEvents((s) => s.conn);
   const map = {
-    open: { c: "bg-ok", t: "En vivo" },
-    connecting: { c: "bg-warn animate-pulse", t: "Conectando…" },
-    closed: { c: "bg-muted", t: "Sin conexión" },
+    open: { c: "bg-ok", t: "Live" },
+    connecting: { c: "bg-warn animate-pulse", t: "Connecting..." },
+    closed: { c: "bg-muted", t: "Offline" },
   } as const;
   const { c, t } = map[conn];
   return (
@@ -87,15 +87,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold text-accent-fg">
               {(me?.user ?? "?").charAt(0).toUpperCase()}
             </div>
-            <span className="truncate text-sm text-fg">{me?.user ?? "—"}</span>
+            <span className="truncate text-sm text-fg">{me?.user ?? "-"}</span>
           </div>
           <div className="flex items-center">
             <ThemeToggle />
             <button
               onClick={() => logout.mutate()}
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors hover:bg-elevated hover:text-danger"
-              aria-label="Cerrar sesión"
-              title="Cerrar sesión"
+              aria-label="Sign out"
+              title="Sign out"
             >
               <LogOut size={17} />
             </button>

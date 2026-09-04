@@ -44,7 +44,7 @@ def extract_and_install():
             ffprobe_exe = os.path.join(root, "ffprobe.exe")
 
     if not ffmpeg_exe or not ffprobe_exe:
-        print("❌ Could not find ffmpeg.exe or ffprobe.exe in the downloaded zip.")
+        print("Could not find ffmpeg.exe or ffprobe.exe in the downloaded archive.")
         return
 
     if not os.path.exists(BIN_DIR):
@@ -56,7 +56,7 @@ def extract_and_install():
     shutil.move(ffmpeg_exe, destination_ffmpeg)
     shutil.move(ffprobe_exe, destination_ffprobe)
 
-    print(f"✅ Installed FFMPEG to {os.path.abspath(destination_ffmpeg)}")
+    print(f"Installed FFmpeg at {os.path.abspath(destination_ffmpeg)}")
 
     # Cleanup
     print("Cleaning up temporary files...")
@@ -67,7 +67,7 @@ def extract_and_install():
 
 if __name__ == "__main__":
     if os.path.exists(os.path.join(BIN_DIR, "ffmpeg.exe")):
-        print("✅ FFMPEG is already installed in ./bin/")
+        print("FFmpeg is already installed in ./bin/.")
     else:
         download_ffmpeg()
         extract_and_install()

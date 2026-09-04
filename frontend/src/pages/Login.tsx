@@ -28,14 +28,14 @@ export function Login() {
           <LogoMark size={52} />
           <div>
             <h1 className="font-display text-2xl font-semibold tracking-tight text-fg">VOD Auto</h1>
-            <p className="mt-1 text-sm text-muted">Panel de administración</p>
+            <p className="mt-1 text-sm text-muted">Administration dashboard</p>
           </div>
         </div>
 
         <form onSubmit={onSubmit} className="card space-y-4 p-6">
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted" htmlFor="user">
-              Usuario
+              Username
             </label>
             <Input
               id="user"
@@ -48,7 +48,7 @@ export function Login() {
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted" htmlFor="password">
-              Contraseña
+              Password
             </label>
             <Input
               id="password"
@@ -67,7 +67,7 @@ export function Login() {
           )}
 
           <Button type="submit" className="w-full" disabled={login.isPending}>
-            {login.isPending ? <Spinner className="text-accent-fg" /> : "Entrar"}
+            {login.isPending ? <Spinner className="text-accent-fg" /> : "Sign in"}
           </Button>
         </form>
       </div>

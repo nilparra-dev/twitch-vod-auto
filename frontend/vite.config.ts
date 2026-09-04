@@ -3,8 +3,8 @@ import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
-// La SPA se sirve bajo el mismo origen que la API en producción (FastAPI sirve
-// dist/). En dev, proxyamos la API y el SSE a uvicorn.
+// FastAPI serves the built SPA from the same origin as the API. During
+// development, Vite proxies API and SSE requests to Uvicorn.
 export default defineConfig({
   plugins: [react()],
   resolve: {

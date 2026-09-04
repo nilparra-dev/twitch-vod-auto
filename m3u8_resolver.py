@@ -97,7 +97,7 @@ class M3U8Resolver:
     def resolve(self, raw_input: str) -> dict:
         value = (raw_input or "").strip()
         if not value:
-            raise M3U8ResolveError("Introduce un ID, una URL o un target video:...")
+            raise M3U8ResolveError("Enter an ID, URL, or video:... target.")
 
         canonical = CANONICAL_RE.fullmatch(value)
         if canonical:
@@ -121,14 +121,13 @@ class M3U8Resolver:
             video_id = public_vod.group("id")
             if len(video_id) > 10:
                 raise M3U8ResolveError(
-                    "Un ID de stream oculto no basta por si solo. Pega la URL de TwitchTracker, "
-                    "StreamsCharts o SullyGnome, o usa video:canal_streamId_timestamp."
+                    "A hidden stream ID is not enough on its own. Paste a TwitchTracker, "
+                    "Streams Charts, or SullyGnome URL, or use video:channel_streamId_timestamp."
                 )
             return self._resolve_public(video_id)
 
         raise M3U8ResolveError(
-            "Formato no reconocido. Usa una URL de Twitch o de un tracker, un ID de VOD publico "
-            "o video:canal_streamId_timestamp."
+            "Unsupported input. Use a Twitch or tracker URL, a public VOD ID, or video:channel_streamId_timestamp."
         )
 
     @staticmethod
@@ -146,7 +145,7 @@ class M3U8Resolver:
 
     def _resolve_hidden(self, channel: str, stream_id: str, timestamp: int, source: str) -> dict:
         if timestamp <= 0:
-            raise M3U8ResolveError("La fecha de inicio del stream no es valida.")
+            raise M3U8ResolveError("The stream start time is invalid.")
 
         vod_path, full_vod_path = self._full_vod_path(channel, stream_id, timestamp)
 
@@ -160,8 +159,8 @@ class M3U8Resolver:
         domain = next((item[0] for item in domain_results if item[1]), None)
         if not domain:
             raise M3U8ResolveError(
-                "No se encontro el VOD en los CDN conocidos de Twitch. Puede haber caducado, "
-                "haber sido borrado o tener una fecha de inicio distinta."
+                "The VOD was not found on known Twitch CDN domains. It may have expired, "
+                "been deleted, or have a different start time."
             )
 
         def probe_format(item) -> PlaylistFormat | None:
@@ -199,7 +198,7 @@ class M3U8Resolver:
                 None,
             )
             if not channel_item:
-                raise M3U8ResolveError(f'No se encontro el canal "{channel}" en SullyGnome.')
+                raise M3U8ResolveError(f'Channel "{channel}" was not found on SullyGnome.')
 
             channel_id = int(channel_item["value"])
             start = 0
@@ -226,11 +225,10 @@ class M3U8Resolver:
         except M3U8ResolveError:
             raise
         except (KeyError, TypeError, ValueError, requests.RequestException) as exc:
-            raise M3U8ResolveError(f"No se pudo consultar la fecha del stream: {exc}") from exc
+            raise M3U8ResolveError(f"Could not retrieve the stream start time: {exc}") from exc
 
         raise M3U8ResolveError(
-            "No se encontro ese stream en el historial anual de SullyGnome. "
-            "Prueba con el target video:canal_streamId_timestamp."
+            "The stream was not found in SullyGnome's one-year history. Try a video:channel_streamId_timestamp target."
         )
 
     @staticmethod
@@ -264,7 +262,7 @@ class M3U8Resolver:
             response.raise_for_status()
             token = response.json().get("data", {}).get("videoPlaybackAccessToken")
             if not token:
-                raise M3U8ResolveError("Twitch no devolvio acceso para ese VOD.")
+                raise M3U8ResolveError("Twitch did not grant playback access to this VOD.")
 
             params = urlencode(
                 {
@@ -284,7 +282,7 @@ class M3U8Resolver:
             manifest.raise_for_status()
             formats = self._parse_master_manifest(manifest.text)
             if not formats:
-                raise M3U8ResolveError("Twitch devolvio un manifiesto sin calidades reproducibles.")
+                raise M3U8ResolveError("Twitch returned a manifest with no playable qualities.")
             return {
                 "kind": "public",
                 "source": "twitch",
@@ -299,7 +297,7 @@ class M3U8Resolver:
         except M3U8ResolveError:
             raise
         except (KeyError, TypeError, requests.RequestException) as exc:
-            raise M3U8ResolveError(f"No se pudo resolver el VOD de Twitch: {exc}") from exc
+            raise M3U8ResolveError(f"Could not resolve the Twitch VOD: {exc}") from exc
 
     @staticmethod
     def _parse_master_manifest(manifest: str) -> list[PlaylistFormat]:

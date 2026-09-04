@@ -10,8 +10,8 @@ export function ThemeToggle() {
       variant="ghost"
       size="icon"
       onClick={toggle}
-      aria-label={theme === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro"}
-      title={theme === "dark" ? "Tema claro" : "Tema oscuro"}
+      aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+      title={theme === "dark" ? "Light theme" : "Dark theme"}
     >
       {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
     </Button>

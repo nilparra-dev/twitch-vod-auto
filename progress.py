@@ -5,7 +5,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
-# Archivo compartido para trackear progreso de descargas en tiempo real.
+# Shared file used to track download progress across processes.
 PROGRESS_FILE = "data/download_progress.json"
 _lock = threading.Lock()
 
@@ -32,7 +32,7 @@ def _process_lock(timeout_seconds=10, stale_seconds=120):
             except OSError:
                 continue
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"No se pudo bloquear {PROGRESS_FILE}") from None
+                raise TimeoutError(f"Could not lock {PROGRESS_FILE}") from None
             time.sleep(0.05)
 
     try:
@@ -48,7 +48,7 @@ def _process_lock(timeout_seconds=10, stale_seconds=120):
 
 
 class DownloadProgress:
-    """Guarda y lee el progreso de descargas en un archivo JSON compartido."""
+    """Read and write download progress in a shared JSON file."""
 
     @staticmethod
     def _read():
@@ -72,7 +72,7 @@ class DownloadProgress:
 
     @staticmethod
     def start(vod_id, channel, video_id):
-        """Marca el inicio de una descarga."""
+        """Mark the start of a download."""
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
@@ -83,7 +83,7 @@ class DownloadProgress:
                     "video_id": video_id,
                     "status": "downloading",
                     "stage": "download",
-                    "message": "Preparando descarga",
+                    "message": "Preparing download",
                     "percent": 0.0,
                     "speed": "",
                     "eta": "",
@@ -112,7 +112,7 @@ class DownloadProgress:
         encoded_mb=None,
         raw_line=None,
     ):
-        """Actualiza el progreso de una descarga."""
+        """Update download progress."""
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
@@ -151,7 +151,7 @@ class DownloadProgress:
 
     @staticmethod
     def complete(vod_id, file_size_mb=None):
-        """Marca una descarga como completada."""
+        """Mark a download as completed."""
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
@@ -159,7 +159,7 @@ class DownloadProgress:
                     return
                 data[vod_id]["status"] = "completed"
                 data[vod_id]["stage"] = "completed"
-                data[vod_id]["message"] = "Archivo listo"
+                data[vod_id]["message"] = "File ready"
                 data[vod_id]["percent"] = 100.0
                 if file_size_mb:
                     data[vod_id]["file_size_mb"] = round(file_size_mb, 1)
@@ -169,7 +169,7 @@ class DownloadProgress:
 
     @staticmethod
     def fail(vod_id, error):
-        """Marca una descarga como fallida."""
+        """Mark a download as failed."""
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
@@ -184,20 +184,20 @@ class DownloadProgress:
 
     @staticmethod
     def get_all():
-        """Retorna todos los progresos activos."""
+        """Return all active progress records."""
         with _process_lock():
             return DownloadProgress._read()
 
     @staticmethod
     def get(vod_id):
-        """Retorna el progreso de un VOD especifico."""
+        """Return progress for one VOD."""
         with _process_lock():
             data = DownloadProgress._read()
         return data.get(vod_id)
 
     @staticmethod
     def cleanup_old(max_age_seconds=3600, stale_downloading_seconds=300):
-        """Elimina entradas antiguas completadas/fallidas y descargas bloqueadas."""
+        """Remove old completed or failed entries and stalled downloads."""
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
@@ -222,7 +222,7 @@ class DownloadProgress:
 
     @staticmethod
     def clear(vod_id):
-        """Elimina un VOD del progreso."""
+        """Remove a VOD from progress tracking."""
         with _lock:
             with _process_lock():
                 data = DownloadProgress._read()
