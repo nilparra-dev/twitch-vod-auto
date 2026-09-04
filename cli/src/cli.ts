@@ -5,11 +5,20 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { stdin, stderr, stdout } from "node:process";
 
 import { chooseFormat, parseInput, ResolveError, resolveM3U8 } from "./resolver.js";
 
-const VERSION = "0.1.0-beta.0";
+function readPackageVersion(): string {
+  const metadata: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  if (typeof metadata === "object" && metadata !== null && "version" in metadata && typeof metadata.version === "string") {
+    return metadata.version;
+  }
+  throw new Error("package.json does not contain a valid version");
+}
+
+const VERSION = readPackageVersion();
 const PLAYERS = new Set(["vlc", "mpv", "iina", "potplayer"]);
 
 interface CliOptions {

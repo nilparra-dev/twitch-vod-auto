@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { buildFullVodPath, chooseFormat, parseInput, parseMasterManifest, ResolveError } from "../../dist/resolver.js";
+
+describe("CLI metadata", () => {
+  it("prints the package version", () => {
+    const metadata = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    const output = execFileSync(process.execPath, ["dist/cli.js", "--version"], { encoding: "utf8" });
+    assert.equal(output.trim(), metadata.version);
+  });
+});
 
 describe("parseInput", () => {
   it("parses public Twitch VODs", () => {
