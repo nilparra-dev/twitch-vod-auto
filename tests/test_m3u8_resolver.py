@@ -70,7 +70,7 @@ class M3U8ResolverTests(unittest.TestCase):
         self.assertEqual(result["canonical_target"], "video:testchannel_51582913581_1721691315")
 
     def test_isolated_hidden_stream_id_explains_missing_data(self):
-        with self.assertRaisesRegex(M3U8ResolveError, "no basta"):
+        with self.assertRaisesRegex(M3U8ResolveError, "not enough"):
             M3U8Resolver(session=HiddenSession()).resolve("51582913581")
 
     def test_public_vod_returns_manifest_formats(self):

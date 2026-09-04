@@ -45,15 +45,15 @@ const STATUS_TONE: Record<string, Tone> = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  uploaded: "Subido",
-  completed: "Completado",
-  failed: "Fallido",
-  pending: "Pendiente",
-  queued: "En cola",
-  downloading: "Descargando",
-  downloaded: "Descargado",
-  encoding: "Procesando",
-  uploading: "Subiendo",
+  uploaded: "Uploaded",
+  completed: "Completed",
+  failed: "Failed",
+  pending: "Pending",
+  queued: "Queued",
+  downloading: "Downloading",
+  downloaded: "Downloaded",
+  encoding: "Encoding",
+  uploading: "Uploading",
 };
 
 export function StatusBadge({ status }: { status: string }) {

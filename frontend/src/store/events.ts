@@ -37,7 +37,7 @@ export const useEvents = create<EventsStore>((set) => ({
     source.onopen = () => set({ conn: "open" });
 
     source.onerror = () => {
-      // EventSource reintenta solo; reflejamos el estado de reconexión.
+      // EventSource retries automatically; expose its reconnecting state.
       set({ conn: "connecting" });
     };
   },

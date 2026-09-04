@@ -23,19 +23,19 @@ function useOAuthToast() {
 }
 
 export function AppLayout() {
-  // Mantiene viva la conexión SSE para toda la app.
+  // Keep the SSE connection alive for the entire app.
   useLiveState();
   const oauthToast = useOAuthToast();
   const [open, setOpen] = useState(false);
 
   return (
     <div className="flex h-dvh overflow-hidden">
-      {/* Sidebar escritorio */}
+      {/* Desktop sidebar */}
       <div className="hidden md:block">
         <Sidebar />
       </div>
 
-      {/* Sidebar móvil (drawer) */}
+      {/* Mobile sidebar drawer */}
       <div
         className={cn(
           "fixed inset-0 z-40 md:hidden",
@@ -60,13 +60,13 @@ export function AppLayout() {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Topbar móvil */}
+        {/* Mobile top bar */}
         <header className="flex h-14 items-center justify-between border-b border-line px-4 md:hidden">
           <Logo />
           <button
             onClick={() => setOpen((v) => !v)}
             className="flex h-9 w-9 items-center justify-center rounded-md text-muted hover:bg-elevated"
-            aria-label="Menú"
+            aria-label="Menu"
           >
             {open ? <X size={20} /> : <Menu size={20} />}
           </button>
@@ -90,8 +90,8 @@ export function AppLayout() {
         >
           {oauthToast === "success" ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
           {oauthToast === "success"
-            ? "Token de YouTube renovado."
-            : "No se pudo renovar el token de YouTube."}
+            ? "YouTube token renewed."
+            : "Could not renew the YouTube token."}
         </div>
       )}
     </div>

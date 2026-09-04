@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "twitch-vod-auto"
 version = "1.0.0"
-description = "Pipeline automatizado: detecta VODs de Twitch, los descarga y los sube a YouTube, con dashboard de administracion."
+description = "Resolve Twitch VODs to M3U8 URLs, with optional download and YouTube automation."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -65,8 +65,8 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W"]
 ignore = [
-    "B008",   # FastAPI usa llamadas (Depends/Form) como defaults a proposito.
-    "E501",   # El ancho de linea lo gestiona `ruff format`; no peleamos con strings/SQL largos.
+    "B008",   # FastAPI intentionally uses Depends and Form calls as defaults.
+    "E501",   # Ruff format handles line width; do not fight long strings or SQL.
 ]
 
 [tool.ruff.lint.per-file-ignores]

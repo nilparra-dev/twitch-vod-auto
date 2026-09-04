@@ -59,7 +59,7 @@ def _extra_twitch_dlp_args(download_cfg: dict) -> list:
     if configured is None:
         return _default_twitch_dlp_args()
     if not isinstance(configured, list):
-        log.warning("[Download] twitch_dlp_args debe ser una lista; se ignora")
+        log.warning("[Download] twitch_dlp_args must be a list; ignoring it")
         return _default_twitch_dlp_args()
     return [str(arg) for arg in configured if str(arg).strip()]
 
@@ -156,7 +156,7 @@ def _dir_contents_for_log(parent: Path, video_id: str = None, output_stem: str =
 
 def _build_target(vod_id: str, tracker_url: str = None, download_url: str = None, video_id: str = None) -> str:
     if tracker_url:
-        log.info("[Download] Usando tracker URL para VOD privado: %s", tracker_url)
+        log.info("[Download] Using tracker URL for hidden VOD: %s", tracker_url)
         return tracker_url
     if download_url:
         return download_url
@@ -255,10 +255,10 @@ def _try_merge_fragments(
 
         merged = _find_download_result(base_path, video_id=video_id)
         if process.returncode == 0 and merged and merged.exists():
-            log.info("[Download] Merge de fragmentos OK: %s", merged)
+            log.info("[Download] Fragment merge complete: %s", merged)
             return merged
         log.warning(
-            "[Download] Merge de fragmentos fallo rc=%s para %s. Ultima salida: %s",
+            "[Download] Fragment merge failed with rc=%s for %s. Last output: %s",
             process.returncode,
             base_path,
             " || ".join(tail[-5:]),
@@ -293,19 +293,19 @@ def download_vod_auto(
     output_path = Path(output_file)
 
     if _is_video_candidate(output_path):
-        log.info("[Download] El archivo ya existe y parece completo: %s", output_file)
+        log.info("[Download] Reusing existing complete file: %s", output_file)
         return output_file
 
     cookies_file = twitch_cfg.get("cookies_file")
     if cookies_file and not os.path.isfile(cookies_file):
-        log.warning("[Download] cookies_file configurado pero no es un archivo valido: %s", cookies_file)
+        log.warning("[Download] Configured cookies_file is not a valid file: %s", cookies_file)
     elif cookies_file:
         log.info(
-            "[Download] cookies_file configurado (%s), pero twitch-dlp no soporta --cookies; se ignora", cookies_file
+            "[Download] cookies_file is set to %s, but twitch-dlp does not support --cookies; ignoring it", cookies_file
         )
     elif twitch_cfg.get("cookies_browser"):
         log.info(
-            "[Download] cookies_browser configurado (%s), pero twitch-dlp no soporta --cookies-from-browser; se ignora",
+            "[Download] cookies_browser is set to %s, but twitch-dlp does not support --cookies-from-browser; ignoring it",
             twitch_cfg["cookies_browser"],
         )
 
@@ -314,10 +314,10 @@ def download_vod_auto(
     is_windows = platform.system() == "Windows"
     cmd, env = _build_command(target, output_file, ffmpeg_folder, download_cfg, is_windows)
 
-    log.info("[Download] Descargando VOD: %s", vod_id)
+    log.info("[Download] Downloading VOD: %s", vod_id)
     log.info("[Download] Target: %s", target)
     if env is None:
-        log.info("[Download] Destino: %s", output_file)
+        log.info("[Download] Destination: %s", output_file)
 
     popen_kwargs = {
         "stdout": subprocess.PIPE,
@@ -346,7 +346,7 @@ def download_vod_auto(
     output_tail = []
     error_lines = []
 
-    log.info("[Download] Iniciando transferencia a disco...")
+    log.info("[Download] Starting transfer to disk...")
     for line in process.stdout:
         line = line.rstrip()
         if line.strip():
@@ -381,7 +381,7 @@ def download_vod_auto(
                     downloaded_mb=downloaded_mb,
                     elapsed_seconds=elapsed,
                     stage="download",
-                    message="Descargando VOD",
+                    message="Downloading VOD",
                     raw_line=line,
                 )
                 last_update = now
@@ -415,15 +415,15 @@ def download_vod_auto(
     final_name = output_path.name
     final_path = _find_download_result(output_path, video_id=video_id, started_at=start_ts)
     if final_path and final_path != output_path:
-        log.info("[Download] Archivo generado con nombre distinto: %s", final_path)
+        log.info("[Download] Downloader used a different filename: %s", final_path)
 
     if not final_path and not error_lines:
-        log.warning("[Download] Archivo no presente tras exit (rc=%s), esperando merge/ffmpeg...", process.returncode)
+        log.warning("[Download] No output after exit (rc=%s); waiting for merge or ffmpeg...", process.returncode)
         for i in range(30):
             time.sleep(2)
             final_path = _find_download_result(output_path, video_id=video_id, started_at=start_ts)
             if final_path:
-                log.info("[Download] Archivo aparecio tras %ds de espera: %s", (i + 1) * 2, final_path)
+                log.info("[Download] Output appeared after waiting %ds: %s", (i + 1) * 2, final_path)
                 break
             parts = sorted(
                 set(parent_dir.glob(final_name + ".*")) | set(parent_dir.glob(output_path.stem + ".*")),
@@ -435,7 +435,7 @@ def download_vod_auto(
                     continue
                 if p.stat().st_size > MIN_DOWNLOAD_FILE_BYTES:
                     log.info(
-                        "[Download] Encontrado parcial %s (%.1f MB), esperando rename...",
+                        "[Download] Found partial file %s (%.1f MB); waiting for rename...",
                         p.name,
                         p.stat().st_size / 1024 / 1024,
                     )
@@ -449,9 +449,7 @@ def download_vod_auto(
         output_file = str(final_path)
         size_mb = get_file_size_mb(output_file)
         avg_speed = size_mb / max(elapsed_total, 1) * 60
-        log.info(
-            "[Download] Completado: %s (%.1f MB) en %s (~%.1f MB/min)", output_file, size_mb, elapsed_str, avg_speed
-        )
+        log.info("[Download] Complete: %s (%.1f MB) in %s (~%.1f MB/min)", output_file, size_mb, elapsed_str, avg_speed)
         DownloadProgress.complete(vod_id, file_size_mb=size_mb)
 
         ffmpeg_exe = os.path.join(ffmpeg_folder, "ffmpeg")
@@ -463,20 +461,20 @@ def download_vod_auto(
         return output_file
 
     if error_lines:
-        error_msg = "twitch-dlp reporto error: " + " | ".join(error_lines[-3:])
+        error_msg = "twitch-dlp reported an error: " + " | ".join(error_lines[-3:])
     else:
-        error_msg = f"Codigo de salida: {process.returncode}"
+        error_msg = f"Exit code: {process.returncode}"
 
     try:
         contents = _dir_contents_for_log(
             Path(output_file).parent, video_id=video_id, output_stem=Path(output_file).stem
         )
-        log.error("[Download] Error tras %s. %s. Dir: %s", elapsed_str, error_msg, ", ".join(contents[:20]))
+        log.error("[Download] Failed after %s. %s. Directory: %s", elapsed_str, error_msg, ", ".join(contents[:20]))
         tail = " || ".join(output_tail[-10:])
         if tail:
-            log.error("[Download] Ultima salida twitch-dlp: %s", tail)
+            log.error("[Download] Last twitch-dlp output: %s", tail)
     except Exception as e:
-        log.error("[Download] Error tras %s. %s (no se pudo listar dir: %s)", elapsed_str, error_msg, e)
+        log.error("[Download] Failed after %s. %s (could not list directory: %s)", elapsed_str, error_msg, e)
 
     DownloadProgress.fail(vod_id, error_msg)
     return None
@@ -504,7 +502,7 @@ def download_vod_with_retry(
         video_id=video_id,
     )
     if not result:
-        raise RuntimeError("Descarga fallida (sin archivo)")
+        raise RuntimeError("Download failed without producing a file")
     return result
 
 
@@ -515,6 +513,6 @@ if __name__ == "__main__":
     vod = input("VOD ID: ").strip()
     result = download_vod_with_retry(vod, cfg)
     if result:
-        print(f"Archivo: {result}")
+        print(f"File: {result}")
     else:
-        print("Fallo la descarga")
+        print("Download failed")

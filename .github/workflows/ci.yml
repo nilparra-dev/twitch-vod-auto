@@ -64,7 +64,7 @@ jobs:
 
       - name: Type check (mypy, advisory)
         run: mypy .
-        continue-on-error: true # tipado gradual: informativo, aun no bloqueante
+        continue-on-error: true # Gradual typing remains advisory for now.
 
       - name: Tests with coverage
         run: python -m pytest --cov=. --cov-report=term-missing

@@ -1,12 +1,10 @@
-"""Almacenamiento de credenciales OAuth de YouTube.
+"""Store YouTube OAuth credentials.
 
-Lee y escribe las credenciales en formato JSON (`Credentials.to_json()`), el
-formato oficial y portable de google-auth. Mantiene retrocompatibilidad con el
-formato `pickle` heredado: si el archivo en disco es un pickle antiguo se carga
-igual y, en el siguiente guardado, se reescribe como JSON de forma transparente.
+Read and write credentials in google-auth's portable JSON format. Legacy pickle
+files remain readable and are converted to JSON on the next save.
 
-Evitar `pickle` para credenciales elimina el riesgo de deserializacion
-arbitraria y la fragilidad entre versiones de librerias.
+Avoiding pickle for new writes removes arbitrary deserialization risk and
+reduces compatibility problems between library versions.
 """
 
 import errno
@@ -21,41 +19,41 @@ log = logging.getLogger("credentials")
 
 
 def load_credentials(path: str):
-    """Carga credenciales desde JSON (preferido) o pickle heredado.
+    """Load credentials from JSON or a legacy pickle file.
 
-    Devuelve un objeto Credentials o None si el archivo no existe o es ilegible.
+    Return None when the file does not exist or cannot be read.
     """
     if not path or not os.path.exists(path):
         return None
 
-    # Formato preferido: JSON de google-auth.
+    # Preferred format: google-auth JSON.
     try:
         with open(path, encoding="utf-8") as fh:
             info = json.load(fh)
         return Credentials.from_authorized_user_info(info)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-        pass  # No es JSON valido; intentar pickle heredado.
-    except Exception as exc:  # pragma: no cover - defensivo
-        log.warning("No se pudo cargar credenciales JSON desde %s: %s", path, exc)
+        pass  # Not valid JSON; try the legacy pickle format.
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("Could not load JSON credentials from %s: %s", path, exc)
 
-    # Retrocompatibilidad: pickle heredado.
+    # Backward compatibility for legacy pickle files.
     try:
         with open(path, "rb") as fh:
             credentials = pickle.load(fh)
-        log.info("Credenciales en formato pickle heredado; se migraran a JSON al guardar.")
+        log.info("Loaded legacy pickle credentials; the next save will convert them to JSON.")
         return credentials
     except Exception as exc:
-        log.warning("No se pudo cargar credenciales heredadas desde %s: %s", path, exc)
+        log.warning("Could not load legacy credentials from %s: %s", path, exc)
         return None
 
 
 def save_credentials(credentials, path: str):
-    """Guarda credenciales como JSON de forma atomica con permisos 0600."""
+    """Save credentials as JSON atomically with 0600 permissions."""
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
     if os.path.isdir(path):
-        raise RuntimeError(f"{path} es un directorio; revisa el bind mount de Docker")
+        raise RuntimeError(f"{path} is a directory; check the Docker bind mount")
 
     payload = credentials.to_json()
     tmp_path = f"{path}.tmp"
@@ -67,15 +65,13 @@ def save_credentials(credentials, path: str):
     try:
         os.replace(tmp_path, path)
     except OSError as exc:
-        # En un bind mount de Docker de archivo unico, `path` es el punto de
-        # montaje y renombrar sobre el devuelve EBUSY (Errno 16); EXDEV/EINVAL
-        # aparecen cuando tmp y destino estan en sistemas de archivos distintos.
-        # En estos casos no hay rename atomico posible: escribimos in situ sobre
-        # el inodo existente para que el cambio se propague al archivo del host.
+        # A single-file Docker bind mount returns EBUSY when replaced. EXDEV or
+        # EINVAL can occur when the temporary file and destination use different
+        # file systems. Fall back to an in-place write in those cases.
         if exc.errno not in (errno.EBUSY, errno.EXDEV, errno.EINVAL):
             raise
         log.warning(
-            "Rename atomico no disponible (%s); escribiendo credenciales in situ en %s.",
+            "Atomic rename unavailable (%s); writing credentials in place at %s.",
             errno.errorcode.get(exc.errno, exc.errno),
             path,
         )
