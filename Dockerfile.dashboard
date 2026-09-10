@@ -8,6 +8,9 @@ WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+# El player reutiliza validadores y tipos del CLI. Sus imports apuntan a
+# ../../../cli/src desde /build/src/replay, así que deben existir en /cli/src.
+COPY cli/src/ /cli/src/
 RUN npm run build
 
 # --- Stage 2: dependencias Python ---
