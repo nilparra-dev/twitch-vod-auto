@@ -115,7 +115,11 @@ export function parseTwitTrackerStreamTime(html: string): number | null {
   return isoToEpoch(match[1]);
 }
 
-/** Parse the recent-streams table of a twitracker.com channel page. */
+/**
+ * Parse the recent-streams table of a twitracker.com channel page.
+ * Columns: [0] started, [1] duration, [2] title, [3] category, [4] language,
+ * [5] peak viewers, [6] average viewers, [7] watch hours, [8] followers.
+ */
 export function parseTwitTrackerStreams(html: string, channel: string): TrackerStream[] {
   const streams: TrackerStream[] = [];
   for (const row of html.split(/<tr[\s>]/i).slice(1)) {
@@ -141,7 +145,11 @@ export function parseTwitTrackerStreams(html: string, channel: string): TrackerS
   return streams;
 }
 
-/** Parse the stream history table of a streamervitals.com channel page. */
+/**
+ * Parse the stream history table of a streamervitals.com channel page.
+ * Columns: [0] category, [1] duration, [2] average viewers, [3] peak viewers,
+ * [4] watch hours. The page does not expose Twitch stream IDs.
+ */
 export function parseStreamerVitalsStreams(html: string, channel: string): TrackerStream[] {
   const streams: TrackerStream[] = [];
   const linkPattern = new RegExp(`href="/${escapeRegExp(channel)}/stream/(\\d+)"`, "i");

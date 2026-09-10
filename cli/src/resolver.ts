@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { mapWithConcurrency } from "./concurrency.js";
 import { fetchVideoMetadata, GqlClient, TWITCH_WEB_CLIENT_ID } from "./twitch/gql.js";
 import {
   fetchSullyGnomeStreamTime,
@@ -301,23 +302,6 @@ async function resolveAtTimestamp(
   };
 }
 
-async function mapWithConcurrency<T>(
-  items: readonly T[],
-  limit: number,
-  run: (item: T) => Promise<void>,
-): Promise<void> {
-  let index = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-    while (index < items.length) {
-      const item = items[index];
-      index += 1;
-      if (item === undefined) continue;
-      await run(item);
-    }
-  });
-  await Promise.all(workers);
-}
-
 /**
  * Last resort when no exact timestamp is available: enumerate the seconds
  * around an approximate timestamp, closest first, across the known
@@ -391,10 +375,14 @@ async function resolveHiddenTarget(target: HiddenTarget): Promise<ResolveResult>
   }
 
   // 2. Exact tracker timestamps: twitracker and SullyGnome expose seconds.
-  const [twitTracker, sullyGnome] = await Promise.all([
+  // allSettled keeps a successful source even when the other one fails.
+  const exactResults = await Promise.allSettled([
     fetchTwitTrackerStreamTime(channel, streamId, trackerOptions(ctx)),
     fetchSullyGnomeStreamTime(channel, streamId, trackerOptions(ctx)),
-  ]).catch(() => [null, null] as Array<number | null>);
+  ]);
+  ctx.signal?.throwIfAborted();
+  const twitTracker = exactResults[0].status === "fulfilled" ? exactResults[0].value : null;
+  const sullyGnome = exactResults[1].status === "fulfilled" ? exactResults[1].value : null;
 
   const candidates: Array<{ seconds: number; source: TimestampSource }> = [];
   if (twitTracker !== null) candidates.push({ seconds: twitTracker, source: "twitracker" });
@@ -416,6 +404,7 @@ async function resolveHiddenTarget(target: HiddenTarget): Promise<ResolveResult>
     // 3. Match the nearest stream on a tracker list. Those pages expose the
     // exact start second and cover channels Twitch does not archive publicly.
     const streams = await fetchStreamerVitalsStreams(channel, trackerOptions(ctx)).catch(() => [] as TrackerStream[]);
+    ctx.signal?.throwIfAborted();
     const nearest = nearestStream(streams, provided, TRACKER_CLOCK_TOLERANCE_SECONDS);
     if (nearest && nearest.startedAt !== provided) {
       const result = await resolveAtTimestamp(

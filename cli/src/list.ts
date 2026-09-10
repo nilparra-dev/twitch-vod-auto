@@ -1,6 +1,7 @@
 import { stdin, stderr, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 
+import { mapWithConcurrency } from "./concurrency.js";
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, ResolveError, resolveM3U8 } from "./resolver.js";
 import { fetchChannelVideos, GqlClient, type ChannelVideoNode } from "./twitch/gql.js";
 import {
@@ -85,7 +86,6 @@ export function mergeChannelStreams(input: {
 }): ChannelStream[] {
   const streams: ChannelStream[] = [];
   const byStreamId = new Map<string, ChannelStream>();
-  const byVodId = new Map<string, ChannelStream>();
 
   for (const video of input.videos) {
     const stream = newStream();
@@ -100,7 +100,6 @@ export function mergeChannelStreams(input: {
     addSource(stream, "twitch");
     streams.push(stream);
     if (stream.streamId) byStreamId.set(stream.streamId, stream);
-    byVodId.set(video.vodId, stream);
   }
 
   for (const tracker of input.twitTracker) {
@@ -166,19 +165,6 @@ function formatStarted(seconds: number | null): string {
 
 function truncate(value: string, width: number): string {
   return value.length <= width ? value : `${value.slice(0, width - 1)}…`;
-}
-
-async function mapConcurrent<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>): Promise<void> {
-  let index = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-    while (index < items.length) {
-      const item = items[index];
-      index += 1;
-      if (item === undefined) continue;
-      await run(item);
-    }
-  });
-  await Promise.all(workers);
 }
 
 /**
@@ -498,7 +484,7 @@ export async function listCommand(args: string[]): Promise<void> {
   }
 
   if (options.probe) {
-    await mapConcurrent(entries, 3, async (entry) => {
+    await mapWithConcurrency(entries, 3, async (entry) => {
       if (!entry.target) {
         entry.probe = { status: "missing", domain: null, reason: "No resolvable target." };
         return;

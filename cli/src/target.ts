@@ -216,14 +216,10 @@ export async function targetCommand(args: string[]): Promise<void> {
       return;
     }
     case "stream-id": {
-      if (!options.streamId || !/^\w+$/.test(options.streamId)) {
-        throw new ResolveError(
-          "A bare stream ID needs its channel: target <channel> <stream-id>.",
-          "CHANNEL_REQUIRED",
-        );
-      }
-      await targetFromStreamId(options, options.streamId.toLowerCase(), parsed.streamId);
-      return;
+      throw new ResolveError(
+        "Put the channel first: target <channel> <stream-id>.",
+        "CHANNEL_REQUIRED",
+      );
     }
     case "public": {
       const target = `https://www.twitch.tv/videos/${parsed.videoId}`;
