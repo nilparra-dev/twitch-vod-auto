@@ -5,7 +5,7 @@ __pycache__/
 *.so
 .pytest_cache/
 
-# Credenciales y datos sensibles
+# Credentials and sensitive data
 client_secret*.json
 youtube_credentials.pkl
 twitch_cookies.txt
@@ -14,12 +14,12 @@ twitch_cookies.txt
 config.prod.local.json
 config.local.json
 
-# Logs y datos de proceso
+# Logs and process data
 logs/
 processed.json
 *.log
 
-# Descargas (temporales)
+# Temporary downloads
 downloads/
 *.mp4
 *.ts
@@ -27,7 +27,7 @@ downloads/
 *.ytdl
 *.jpg
 
-# Temporales
+# Temporary files
 ffmpeg_temp/
 ffmpeg.zip
 bin/
@@ -51,7 +51,7 @@ certbot-www/
 *.swp
 *.swo
 
-# Sistema operativo
+# Operating system files
 .DS_Store
 Thumbs.db
 

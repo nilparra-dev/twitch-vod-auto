@@ -400,4 +400,4 @@ class PipelineDB:
 
 if __name__ == "__main__":
     db = PipelineDB("data/test.db")
-    print("DB inicializada correctamente en", db.db_path)
+    print("Database initialized at", db.db_path)

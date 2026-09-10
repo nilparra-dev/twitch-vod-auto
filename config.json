@@ -16,7 +16,7 @@
     },
     "channels": [
       {
-        "name": "nombre_canal_1",
+        "name": "channel_name_1",
         "cookies_browser": null,
         "cookies_file": null,
         "youtube_overrides": {
@@ -27,7 +27,7 @@
         }
       },
       {
-        "name": "nombre_canal_2",
+        "name": "channel_name_2",
         "cookies_browser": null,
         "cookies_file": null,
         "youtube_overrides": {

@@ -1,6 +1,6 @@
 {
   "name": "twitch-vod-m3u8",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0-beta.2",
   "description": "Resolve public and hidden Twitch VODs to playable M3U8 URLs",
   "type": "module",
   "bin": {

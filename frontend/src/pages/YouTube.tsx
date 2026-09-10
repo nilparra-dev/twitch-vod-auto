@@ -46,7 +46,7 @@ export function YouTube() {
   if (isLoading || !data) {
     return (
       <div>
-        <PageHeader title="YouTube" subtitle="Estado de las credenciales OAuth" />
+        <PageHeader title="YouTube" subtitle="OAuth credential status" />
         <CenterSpinner />
       </div>
     );
@@ -59,40 +59,40 @@ export function YouTube() {
 
   return (
     <div>
-      <PageHeader title="YouTube" subtitle="Estado de las credenciales OAuth" />
+      <PageHeader title="YouTube" subtitle="OAuth credential status" />
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Estado del token</CardTitle>
+            <CardTitle>Token status</CardTitle>
             <HealthIcon size={18} className={healthTone} />
           </CardHeader>
           <CardBody className="divide-y divide-line pt-1">
-            <Row label="Credenciales">
+            <Row label="Credentials">
               {c.exists ? (
                 c.valid ? (
-                  <Badge tone="ok">Válidas</Badge>
+                  <Badge tone="ok">Valid</Badge>
                 ) : c.expired ? (
-                  <Badge tone="warn">Expiradas</Badge>
+                  <Badge tone="warn">Expired</Badge>
                 ) : (
-                  <Badge tone="warn">Presentes</Badge>
+                  <Badge tone="warn">Present</Badge>
                 )
               ) : (
-                <Badge tone="danger">Ausentes</Badge>
+                <Badge tone="danger">Missing</Badge>
               )}
             </Row>
             <Row label="Refresh token">
               {c.has_refresh_token ? (
-                <Badge tone="ok">Sí</Badge>
+                <Badge tone="ok">Yes</Badge>
               ) : (
                 <Badge tone="warn">No</Badge>
               )}
             </Row>
-            <Row label="Expira">{c.expiry ? formatDate(c.expiry) : "—"}</Row>
-            <Row label="Actualizado">{c.updated_at ? formatDate(c.updated_at) : "—"}</Row>
+            <Row label="Expires">{c.expiry ? formatDate(c.expiry) : "-"}</Row>
+            <Row label="Updated">{c.updated_at ? formatDate(c.updated_at) : "-"}</Row>
             <Row label="client_secret">
               <Badge tone={data.client_secret_exists ? "neutral" : "danger"}>
-                {data.client_secret_exists ? data.client_secret_type : "ausente"}
+                {data.client_secret_exists ? data.client_secret_type : "missing"}
               </Badge>
             </Row>
             {c.error && (
@@ -103,30 +103,28 @@ export function YouTube() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Renovar acceso</CardTitle>
+            <CardTitle>Renew access</CardTitle>
             <KeyRound size={18} className="text-muted" />
           </CardHeader>
           <CardBody className="space-y-4">
             {!data.ready ? (
               <p className="rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-warn">
-                Falta un <code className="font-mono">client_secret.json</code> válido (web o desktop)
-                en el servidor.
+                A valid web or desktop <code className="font-mono">client_secret.json</code> is missing.
               </p>
             ) : (
               <>
                 <p className="text-sm text-muted">
-                  Modo <Badge tone="neutral">{data.mode}</Badge>. Inicia el flujo OAuth de Google
-                  para generar un token nuevo.
+                  Mode: <Badge tone="neutral">{data.mode}</Badge>. Start Google's OAuth flow to create a new token.
                 </p>
                 <Button onClick={() => start.mutate()} disabled={start.isPending}>
                   {start.isPending ? <Spinner className="text-accent-fg" /> : <RefreshCw size={16} />}
-                  {data.mode === "web" ? "Conectar con YouTube" : "Iniciar renovación"}
+                  {data.mode === "web" ? "Connect YouTube" : "Start renewal"}
                 </Button>
 
                 {data.mode === "installed" && (
                   <div className="space-y-2 border-t border-line pt-4">
                     <label className="text-xs font-medium text-muted">
-                      Pega la URL completa a la que te redirigió Google
+                      Paste the full URL Google redirected you to
                     </label>
                     <Input
                       placeholder="http://localhost:53682/?state=…&code=…"
@@ -138,7 +136,7 @@ export function YouTube() {
                     )}
                     {complete.isSuccess && (
                       <p className="flex items-center gap-2 text-sm text-ok">
-                        <CheckCircle2 size={15} /> Token renovado.
+                        <CheckCircle2 size={15} /> Token renewed.
                       </p>
                     )}
                     <Button
@@ -146,7 +144,7 @@ export function YouTube() {
                       onClick={() => complete.mutate()}
                       disabled={complete.isPending || !callback.trim()}
                     >
-                      {complete.isPending ? <Spinner /> : "Completar renovación"}
+                      {complete.isPending ? <Spinner /> : "Complete renewal"}
                     </Button>
                   </div>
                 )}

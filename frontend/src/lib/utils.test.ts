@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { cn, formatBytes } from "./utils";
 
 describe("formatBytes", () => {
-  it("muestra guion para valores vacíos o cero", () => {
-    expect(formatBytes(0)).toBe("—");
-    expect(formatBytes(null)).toBe("—");
-    expect(formatBytes(undefined)).toBe("—");
+  it("shows a dash for empty or zero values", () => {
+    expect(formatBytes(0)).toBe("-");
+    expect(formatBytes(null)).toBe("-");
+    expect(formatBytes(undefined)).toBe("-");
   });
 
   it("formatea MB y GB", () => {
@@ -16,7 +16,7 @@ describe("formatBytes", () => {
 });
 
 describe("cn", () => {
-  it("combina y deduplica clases de tailwind", () => {
+  it("merges and deduplicates Tailwind classes", () => {
     expect(cn("px-2", "px-4")).toBe("px-4");
   });
 

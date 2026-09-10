@@ -35,7 +35,7 @@ if os.path.exists(CONFIG_PATH):
 DB_PATH = config.get("monitoring", {}).get("db_path", "data/pipeline.db")
 LOG_PATH = config.get("app", {}).get("log_file", "logs/pipeline.log")
 
-# Auth: lee de env vars; si no hay password, genera una aleatoria y la loguea
+# Authentication comes from environment variables. A random password is only allowed explicitly.
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -45,24 +45,24 @@ _login_attempts = {}
 
 if not SECRET_KEY:
     SECRET_KEY = secrets.token_urlsafe(32)
-    logging.warning("[Auth] SECRET_KEY no definido, usando aleatorio (sesiones se invalidan al reiniciar)")
+    logging.warning("[Auth] SECRET_KEY is not set; sessions will reset when the process restarts")
 elif len(SECRET_KEY) < 32:
     logging.warning(
-        "[Auth] SECRET_KEY demasiado corta (%d chars). La cookie de sesion se firma con ella; "
-        "usa una clave aleatoria de >=32 chars para evitar que se pueda forjar.",
+        "[Auth] SECRET_KEY is too short (%d characters). Use at least 32 random characters "
+        "to prevent session cookie forgery.",
         len(SECRET_KEY),
     )
 
 if not ADMIN_PASSWORD:
     if not ALLOW_RANDOM_ADMIN_PASSWORD:
-        raise RuntimeError("ADMIN_PASSWORD no definido. Define ADMIN_PASSWORD en .env.")
+        raise RuntimeError("ADMIN_PASSWORD is not set. Define it in .env.")
     ADMIN_PASSWORD = secrets.token_urlsafe(24)
-    logging.warning("[Auth] ADMIN_PASSWORD no definido. Usuario: %s Password temporal: %s", ADMIN_USER, ADMIN_PASSWORD)
+    logging.warning("[Auth] ADMIN_PASSWORD is not set. User: %s Temporary password: %s", ADMIN_USER, ADMIN_PASSWORD)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(name)-12s | %(message)s")
 log = logging.getLogger("dashboard")
 
-# openapi_url=None: no exponer el esquema OpenAPI (mapa de la API) sin autenticar.
+# Do not expose the OpenAPI schema without authentication.
 app = FastAPI(title="Twitch VOD Auto - Admin", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     SessionMiddleware,
@@ -82,9 +82,9 @@ async def security_middleware(request: Request, call_next):
         origin_host = urlparse(origin).hostname if origin else None
         referer_host = urlparse(referer).hostname if referer else None
         if origin_host and origin_host != host:
-            return JSONResponse(status_code=403, content={"detail": "Origen no permitido"})
+            return JSONResponse(status_code=403, content={"detail": "Origin not allowed"})
         if not origin_host and referer_host and referer_host != host:
-            return JSONResponse(status_code=403, content={"detail": "Origen no permitido"})
+            return JSONResponse(status_code=403, content={"detail": "Origin not allowed"})
 
     response = await call_next(request)
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
@@ -92,9 +92,8 @@ async def security_middleware(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
         "Content-Security-Policy",
-        # JS empaquetado (no inline) → sin script 'unsafe-inline'. Fuentes
-        # self-hosted → sin orígenes de Google. style 'unsafe-inline' se mantiene
-        # (estilos inline de la SPA y de Recharts).
+        # JavaScript and fonts are bundled locally. Inline styles remain enabled
+        # because the SPA and Recharts use them.
         "default-src 'self'; "
         "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
@@ -112,8 +111,8 @@ _db_instance = None
 
 
 def get_db():
-    # Singleton: PipelineDB abre una conexion nueva por operacion, asi que
-    # compartir la instancia es seguro y evita re-ejecutar el DDL en cada request.
+    # PipelineDB opens a connection per operation. Reusing the instance avoids
+    # running its schema setup for every request.
     global _db_instance
     if _db_instance is None:
         _db_instance = PipelineDB(DB_PATH)
@@ -181,7 +180,7 @@ def _youtube_credentials_status(path: str) -> dict:
         status["updated_at"] = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
         credentials = load_credentials(path)
         if credentials is None:
-            status["error"] = "No se pudieron leer las credenciales"
+            status["error"] = "Could not read credentials"
             return status
         status["valid"] = bool(getattr(credentials, "valid", False))
         status["expired"] = bool(getattr(credentials, "expired", False))
@@ -217,15 +216,12 @@ def _write_youtube_credentials(credentials, path: str):
 def require_auth(request: Request):
     user = request.session.get("user")
     if not user:
-        raise HTTPException(401, "No autenticado")
+        raise HTTPException(401, "Not authenticated")
     return user
 
 
-# Header de confianza para identificar al cliente (rate-limit de login).
-# nginx fija X-Real-IP a la IP de conexion sobrescribiendo lo que mande el
-# cliente y, con `real_ip` + CF-Connecting-IP, esa IP es la del cliente real
-# tras Cloudflare. NO usamos X-Forwarded-For: su primer valor lo controla el
-# cliente y permitia saltarse el rate-limit rotandolo en cada peticion.
+# Use the proxy-controlled X-Real-IP header for login rate limits. Do not trust
+# X-Forwarded-For because clients can control its first value.
 TRUSTED_IP_HEADER = os.getenv("TRUSTED_IP_HEADER", "x-real-ip").lower()
 
 
@@ -244,7 +240,7 @@ def _check_login_rate_limit(request: Request):
     attempts = [ts for ts in _login_attempts.get(ip, []) if now - ts < window]
     if len(attempts) >= max_attempts:
         _login_attempts[ip] = attempts
-        raise HTTPException(429, "Demasiados intentos. Espera unos minutos.")
+        raise HTTPException(429, "Too many attempts. Wait a few minutes.")
     attempts.append(now)
     _login_attempts[ip] = attempts
 
@@ -266,7 +262,7 @@ def api_login(request: Request, user: str = Form(...), password: str = Form(...)
         request.session.clear()
         request.session["user"] = user
         return {"status": "ok", "user": user}
-    raise HTTPException(401, "Credenciales invalidas")
+    raise HTTPException(401, "Invalid credentials")
 
 
 @app.post("/api/logout")
@@ -320,7 +316,7 @@ def api_vod_detail(vod_id: str, _: str = Depends(require_auth)):
     db = get_db()
     vod = db.get_vod(vod_id)
     if not vod:
-        raise HTTPException(404, "VOD no encontrado")
+        raise HTTPException(404, "VOD not found")
     return vod
 
 
@@ -329,7 +325,7 @@ def api_vod_retry(vod_id: str, _: str = Depends(require_auth)):
     db = get_db()
     vod = db.get_vod(vod_id)
     if not vod:
-        raise HTTPException(404, "VOD no encontrado")
+        raise HTTPException(404, "VOD not found")
     db.reset_vod(vod_id)
     db.enqueue(
         {
@@ -343,7 +339,7 @@ def api_vod_retry(vod_id: str, _: str = Depends(require_auth)):
         },
         force=True,
     )
-    return {"status": "ok", "message": "VOD reencolado"}
+    return {"status": "ok", "message": "VOD queued again"}
 
 
 @app.delete("/api/vods/{vod_id}")
@@ -455,7 +451,7 @@ async def api_events(request: Request, _: str = Depends(require_auth)):
 def api_progress_vod(vod_id: str, _: str = Depends(require_auth)):
     progress = DownloadProgress.get(vod_id)
     if not progress:
-        raise HTTPException(404, "No hay progreso")
+        raise HTTPException(404, "No progress found")
     return progress
 
 
@@ -477,7 +473,7 @@ def api_health(_: str = Depends(require_auth)):
 def api_resolve_m3u8(payload: dict, _: str = Depends(require_auth)):
     value = payload.get("input")
     if not isinstance(value, str):
-        raise HTTPException(422, "El campo input es obligatorio")
+        raise HTTPException(422, "The input field is required")
     try:
         return M3U8Resolver().resolve(value)
     except M3U8ResolveError as exc:
@@ -506,7 +502,7 @@ def api_youtube_oauth_status(request: Request, _: str = Depends(require_auth)):
 def api_youtube_oauth_start(request: Request, _: str = Depends(require_auth)):
     client_secret_file = _youtube_client_secret_file()
     if not os.path.isfile(client_secret_file):
-        raise HTTPException(400, "Falta client_secret.json en el servidor")
+        raise HTTPException(400, "client_secret.json is missing")
 
     client_type = _client_secret_type(client_secret_file)
     if client_type == "web":
@@ -516,7 +512,7 @@ def api_youtube_oauth_start(request: Request, _: str = Depends(require_auth)):
         redirect_uri = _youtube_installed_redirect_uri()
         mode = "installed"
     else:
-        raise HTTPException(400, "client_secret.json no es OAuth Web application ni Desktop app")
+        raise HTTPException(400, "client_secret.json is not a Web or Desktop OAuth application")
 
     flow = Flow.from_client_secrets_file(
         client_secret_file,
@@ -545,9 +541,9 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
     started_at = int(request.session.get("youtube_oauth_started_at") or 0)
 
     if mode != "installed" or not expected_state or not redirect_uri:
-        raise HTTPException(400, "No hay una renovacion OAuth Desktop pendiente")
+        raise HTTPException(400, "No Desktop OAuth renewal is pending")
     if not code_verifier:
-        raise HTTPException(400, "Falta code_verifier; inicia otra renovacion OAuth")
+        raise HTTPException(400, "Missing code_verifier; start the OAuth flow again")
     if time.time() - started_at > 15 * 60:
         for key in (
             "youtube_oauth_state",
@@ -557,15 +553,15 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
             "youtube_oauth_started_at",
         ):
             request.session.pop(key, None)
-        raise HTTPException(400, "La renovacion OAuth ha caducado; inicia otra")
+        raise HTTPException(400, "The OAuth flow expired; start it again")
 
     callback_url = str(payload.get("callback_url") or "")
     code = _extract_oauth_code(callback_url or str(payload.get("code") or ""))
     pasted_state = (parse_qs(urlparse(callback_url).query).get("state") or [""])[0] if callback_url else ""
     if pasted_state and not secrets.compare_digest(pasted_state, expected_state):
-        raise HTTPException(400, "El state de OAuth no coincide; inicia otra renovacion")
+        raise HTTPException(400, "OAuth state mismatch; start the flow again")
     if not code:
-        raise HTTPException(400, "No se encontro el parametro code en el texto pegado")
+        raise HTTPException(400, "The pasted value does not contain a code parameter")
 
     try:
         flow = Flow.from_client_secrets_file(
@@ -578,13 +574,13 @@ def api_youtube_oauth_complete(request: Request, payload: dict, _: str = Depends
         flow.fetch_token(code=code)
         credentials = flow.credentials
         if not getattr(credentials, "refresh_token", None):
-            raise RuntimeError("Google no devolvio refresh_token")
+            raise RuntimeError("Google did not return a refresh token")
         _write_youtube_credentials(credentials, _youtube_credentials_file())
-        log.info("[YouTubeOAuth] Token de YouTube renovado desde dashboard con flujo Desktop")
+        log.info("[YouTubeOAuth] YouTube token renewed through the desktop flow")
         return {"status": "ok"}
     except Exception as e:
-        log.error("[YouTubeOAuth] Error completando OAuth Desktop: %s", e)
-        raise HTTPException(400, f"No se pudo completar OAuth: {e}") from e
+        log.error("[YouTubeOAuth] Could not complete desktop OAuth: %s", e)
+        raise HTTPException(400, f"Could not complete OAuth: {e}") from e
     finally:
         for key in (
             "youtube_oauth_state",
@@ -618,16 +614,16 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
         request.session.pop(key, None)
 
     if error:
-        log.warning("[YouTubeOAuth] Google devolvio error: %s", error)
+        log.warning("[YouTubeOAuth] Google returned an error: %s", error)
         return done("error")
     if not code or not state or not expected_state or not redirect_uri or not code_verifier:
-        log.warning("[YouTubeOAuth] Callback incompleto")
+        log.warning("[YouTubeOAuth] Incomplete callback")
         return done("error")
     if not secrets.compare_digest(state, expected_state):
-        log.warning("[YouTubeOAuth] State invalido")
+        log.warning("[YouTubeOAuth] Invalid state")
         return done("error")
     if time.time() - started_at > 15 * 60:
-        log.warning("[YouTubeOAuth] State caducado")
+        log.warning("[YouTubeOAuth] State expired")
         return done("error")
 
     try:
@@ -643,13 +639,13 @@ def youtube_oauth_callback(request: Request, state: str = None, code: str = None
         flow.fetch_token(authorization_response=authorization_response)
         credentials = flow.credentials
         if not getattr(credentials, "refresh_token", None):
-            log.warning("[YouTubeOAuth] Google no devolvio refresh_token")
+            log.warning("[YouTubeOAuth] Google did not return a refresh token")
             return done("error")
         _write_youtube_credentials(credentials, _youtube_credentials_file())
-        log.info("[YouTubeOAuth] Token de YouTube renovado desde dashboard")
+        log.info("[YouTubeOAuth] YouTube token renewed through the dashboard")
         return done("success")
     except Exception as e:
-        log.error("[YouTubeOAuth] Error renovando token: %s", e)
+        log.error("[YouTubeOAuth] Could not renew the token: %s", e)
         return done("error")
 
 
@@ -689,11 +685,11 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
     tags = payload.get("tags", [])
 
     if not url_or_id:
-        return JSONResponse(status_code=400, content={"error": "url_or_id requerido"})
+        return JSONResponse(status_code=400, content={"error": "url_or_id is required"})
 
     parsed = parse_twitch_vod_url(url_or_id)
     if not parsed or not parsed.get("video_id"):
-        return JSONResponse(status_code=400, content={"error": "No se pudo parsear la URL/VOD ID"})
+        return JSONResponse(status_code=400, content={"error": "Could not parse the URL or VOD ID"})
 
     db = get_db()
     vod_id = parsed["vod_id"]
@@ -703,13 +699,13 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
     tracker_url = parsed.get("tracker_url")
     download_url = parsed.get("download_url")
     if privacy not in {"private", "unlisted", "public"}:
-        return JSONResponse(status_code=400, content={"error": "privacy invalida"})
+        return JSONResponse(status_code=400, content={"error": "Invalid privacy value"})
     if not isinstance(tags, list):
         tags = []
     tags = [str(tag).strip()[:50] for tag in tags if str(tag).strip()][:20]
 
     if db.is_processed(vod_id):
-        return JSONResponse(status_code=409, content={"error": "Este VOD ya fue procesado", "vod_id": vod_id})
+        return JSONResponse(status_code=409, content={"error": "This VOD has already been processed", "vod_id": vod_id})
 
     source_meta = json.dumps(
         {
@@ -738,7 +734,7 @@ def api_manual_upload(payload: dict, _: str = Depends(require_auth)):
 
 
 # =============================================================================
-# SPA: frontend compilado servido por FastAPI (mismo origen que la API)
+# FastAPI serves the compiled SPA from the same origin as the API.
 # =============================================================================
 
 DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
@@ -751,9 +747,7 @@ if ASSETS_DIR.is_dir():
 
 @app.get("/{full_path:path}")
 def spa(full_path: str):
-    """Sirve la SPA. Las rutas /api/* y /healthz están declaradas antes y tienen
-    prioridad; aquí cae el resto (/, /login, /vods, …) → index.html (routing en
-    cliente). También sirve ficheros estáticos sueltos (favicon, etc.)."""
+    """Serve SPA routes and standalone static assets such as the favicon."""
     if full_path.startswith("api/"):
         raise HTTPException(404, "Not found")
     if full_path:
@@ -766,7 +760,7 @@ def spa(full_path: str):
             return FileResponse(candidate)
     if INDEX_FILE.is_file():
         return FileResponse(INDEX_FILE)
-    raise HTTPException(503, "Frontend no compilado; ejecuta `npm run build` en frontend/.")
+    raise HTTPException(503, "Frontend not built; run `npm run build` in frontend/.")
 
 
 if __name__ == "__main__":

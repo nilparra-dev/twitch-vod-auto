@@ -18,11 +18,11 @@ import { useEvents } from "@/store/events";
 
 const STATUSES = ["", "pending", "downloading", "uploaded", "failed"];
 const STATUS_LABEL: Record<string, string> = {
-  "": "Todos los estados",
-  pending: "Pendiente",
-  downloading: "En proceso",
-  uploaded: "Subido",
-  failed: "Fallido",
+  "": "All statuses",
+  pending: "Pending",
+  downloading: "In progress",
+  uploaded: "Uploaded",
+  failed: "Failed",
 };
 const PAGE = 25;
 
@@ -66,14 +66,14 @@ export function Vods() {
 
   return (
     <div>
-      <PageHeader title="VODs" subtitle={`${total.toLocaleString()} en total`} />
+      <PageHeader title="VODs" subtitle={`${total.toLocaleString()} total`} />
 
       <Card className="mb-4 flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
         <div className="relative flex-1">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <Input
             className="pl-9"
-            placeholder="Buscar por canal, video ID o VOD ID…"
+            placeholder="Search by channel, video ID, or VOD ID..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -86,7 +86,7 @@ export function Vods() {
           ))}
         </Select>
         <Select value={channel} onChange={(e) => setChannel(e.target.value)}>
-          <option value="">Todos los canales</option>
+          <option value="">All channels</option>
           {channels.map((c) => (
             <option key={c} value={c}>
               {c}
@@ -99,20 +99,20 @@ export function Vods() {
         {isLoading ? (
           <CenterSpinner />
         ) : isError ? (
-          <EmptyState title="Error cargando VODs" hint={(error as Error).message} />
+          <EmptyState title="Could not load VODs" hint={(error as Error).message} />
         ) : vods.length === 0 ? (
-          <EmptyState title="Sin resultados" hint="Prueba a cambiar los filtros." />
+          <EmptyState title="No results" hint="Try changing the filters." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-muted">
-                  <th className="px-5 py-3 font-medium">Canal</th>
+                  <th className="px-5 py-3 font-medium">Channel</th>
                   <th className="px-5 py-3 font-medium">Video ID</th>
-                  <th className="px-5 py-3 font-medium">Estado</th>
-                  <th className="hidden px-5 py-3 font-medium md:table-cell">Tamaño</th>
-                  <th className="hidden px-5 py-3 font-medium lg:table-cell">Detectado</th>
-                  <th className="px-5 py-3 text-right font-medium">Acciones</th>
+                  <th className="px-5 py-3 font-medium">Status</th>
+                  <th className="hidden px-5 py-3 font-medium md:table-cell">Size</th>
+                  <th className="hidden px-5 py-3 font-medium lg:table-cell">Detected</th>
+                  <th className="px-5 py-3 text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -137,7 +137,7 @@ export function Vods() {
                             target="_blank"
                             rel="noreferrer"
                             className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-bg hover:text-accent"
-                            title="Ver en YouTube"
+                            title="Watch on YouTube"
                           >
                             <ExternalLink size={15} />
                           </a>
@@ -145,16 +145,16 @@ export function Vods() {
                         <button
                           onClick={() => retry.mutate(v.vod_id)}
                           className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-bg hover:text-fg"
-                          title="Reencolar"
+                          title="Queue again"
                         >
                           <RotateCcw size={15} />
                         </button>
                         <button
                           onClick={() => {
-                            if (confirm(`¿Borrar ${v.video_id}?`)) remove.mutate(v.vod_id);
+                            if (confirm(`Delete ${v.video_id}?`)) remove.mutate(v.vod_id);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-danger/10 hover:text-danger"
-                          title="Borrar"
+                          title="Delete"
                         >
                           <Trash2 size={15} />
                         </button>
@@ -171,7 +171,7 @@ export function Vods() {
       {pages > 1 && (
         <div className="mt-4 flex items-center justify-between text-sm text-muted">
           <span>
-            Página {page} de {pages}
+            Page {page} of {pages}
           </span>
           <div className="flex gap-2">
             <Button
@@ -180,7 +180,7 @@ export function Vods() {
               disabled={offset === 0}
               onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
             >
-              <ChevronLeft size={16} /> Anterior
+              <ChevronLeft size={16} /> Previous
             </Button>
             <Button
               variant="secondary"
@@ -188,7 +188,7 @@ export function Vods() {
               disabled={page >= pages}
               onClick={() => setOffset((o) => o + PAGE)}
             >
-              Siguiente <ChevronRight size={16} />
+              Next <ChevronRight size={16} />
             </Button>
           </div>
         </div>

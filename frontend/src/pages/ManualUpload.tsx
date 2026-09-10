@@ -54,7 +54,7 @@ export function ManualUpload() {
 
   return (
     <div>
-      <PageHeader title="Subida manual" subtitle="Encola un VOD por URL o ID para descargar y subir" />
+      <PageHeader title="Manual upload" subtitle="Queue a VOD by URL or ID for download and upload" />
 
       <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
         <Card>
@@ -67,8 +67,8 @@ export function ManualUpload() {
               className="space-y-5"
             >
               <Field
-                label="URL o ID del VOD"
-                hint="twitch.tv/videos/123, twitchtracker.com/canal/streams/123 o el ID numérico."
+                label="VOD URL or ID"
+                hint="Use twitch.tv/videos/123, a tracker stream URL, or a numeric ID."
               >
                 <Input
                   required
@@ -80,32 +80,32 @@ export function ManualUpload() {
               </Field>
 
               <div className="grid gap-5 sm:grid-cols-2">
-                <Field label="Canal (opcional)">
+                <Field label="Channel (optional)">
                   <Input
-                    placeholder="se deduce de la URL"
+                    placeholder="inferred from the URL"
                     value={channel}
                     onChange={(e) => setChannel(e.target.value)}
                   />
                 </Field>
-                <Field label="Privacidad">
+                <Field label="Privacy">
                   <Select value={privacy} onChange={(e) => setPrivacy(e.target.value)} className="w-full">
-                    <option value="private">Privado</option>
-                    <option value="unlisted">No listado</option>
-                    <option value="public">Público</option>
+                    <option value="private">Private</option>
+                    <option value="unlisted">Unlisted</option>
+                    <option value="public">Public</option>
                   </Select>
                 </Field>
               </div>
 
-              <Field label="Título personalizado (opcional)">
+              <Field label="Custom title (optional)">
                 <Input
-                  placeholder="se genera automáticamente si lo dejas vacío"
+                  placeholder="generated automatically when empty"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   maxLength={100}
                 />
               </Field>
 
-              <Field label="Tags (opcional)" hint="Separados por comas.">
+              <Field label="Tags (optional)" hint="Separate tags with commas.">
                 <Input
                   placeholder="twitch, vod, gaming"
                   value={tags}
@@ -120,13 +120,13 @@ export function ManualUpload() {
               )}
               {upload.isSuccess && (
                 <p className="flex items-center gap-2 rounded-md border border-ok/30 bg-ok/10 px-3 py-2 text-sm text-ok">
-                  <CheckCircle2 size={16} /> Encolado: {upload.data.vod_id}
+                  <CheckCircle2 size={16} /> Queued: {upload.data.vod_id}
                 </p>
               )}
 
               <Button type="submit" disabled={upload.isPending || !urlOrId.trim()}>
                 {upload.isPending ? <Spinner className="text-accent-fg" /> : <Upload size={16} />}
-                Encolar VOD
+                Queue VOD
               </Button>
             </form>
           </CardBody>
@@ -134,10 +134,10 @@ export function ManualUpload() {
 
         <Card>
           <CardBody className="space-y-3 text-sm text-muted">
-            <h3 className="font-tight font-semibold text-fg">Cómo funciona</h3>
-            <p>El VOD se añade a la cola, se descarga con twitch-dlp y se sube a YouTube con la privacidad elegida.</p>
-            <p>Si el VOD ya fue procesado, se rechaza para evitar duplicados.</p>
-            <p>Sigue el progreso en vivo desde el Resumen o la Cola.</p>
+            <h3 className="font-tight font-semibold text-fg">How it works</h3>
+            <p>The worker downloads the queued VOD with twitch-dlp, then uploads it to YouTube using your selected privacy.</p>
+            <p>Previously processed VODs are rejected to prevent duplicates.</p>
+            <p>Track live progress from Overview or Queue.</p>
           </CardBody>
         </Card>
       </div>

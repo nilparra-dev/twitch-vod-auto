@@ -9,8 +9,8 @@ log = logging.getLogger("twitch_api")
 
 class TwitchAPIClient:
     """
-    Cliente para la API oficial de Twitch (Helix).
-    Usa Client ID + Client Secret para obtener App Access Token.
+    Client for the official Twitch Helix API.
+    Uses a client ID and secret to obtain an app access token.
     """
 
     BASE_URL = "https://api.twitch.tv/helix"
@@ -34,7 +34,7 @@ class TwitchAPIClient:
         data = resp.json()
         self._token = data["access_token"]
         self.session.headers["Authorization"] = f"Bearer {self._token}"
-        log.info("[TwitchAPI] Token obtenido (expira en %ds)", data.get("expires_in", 0))
+        log.info("[TwitchAPI] Token acquired; expires in %ds", data.get("expires_in", 0))
         return self._token
 
     def _request(self, endpoint: str, params: dict = None) -> dict:
@@ -42,7 +42,7 @@ class TwitchAPIClient:
         url = f"{self.BASE_URL}{endpoint}"
         resp = self.session.get(url, params=params, timeout=30)
         if resp.status_code == 401:
-            # Token expirado, refrescar
+            # Refresh an expired token once.
             self._token = None
             self._get_app_token()
             resp = self.session.get(url, params=params, timeout=30)
@@ -50,16 +50,16 @@ class TwitchAPIClient:
         return resp.json()
 
     def get_user_id(self, login: str) -> str:
-        """Obtiene el user_id de un canal por su login."""
+        """Return the user ID for a channel login."""
         data = self._request("/users", {"login": login.lower()})
         users = data.get("data", [])
         if not users:
-            raise ValueError(f"Canal no encontrado en Twitch API: {login}")
+            raise ValueError(f"Channel not found in the Twitch API: {login}")
         return users[0]["id"]
 
     def get_videos(self, user_id: str, limit: int = 10, period: str = "month") -> list[dict]:
         """
-        Obtiene videos/VODs de un canal.
+        Return videos and VODs for a channel.
         period: all, day, week, month
         type: all, upload, archive, highlight
         """
@@ -75,10 +75,10 @@ class TwitchAPIClient:
             return 0
 
     def get_video_by_id(self, video_id: str) -> dict | None:
-        """Obtiene un VOD concreto por su id. Devuelve None si no existe.
+        """Return one VOD by ID, or None when it does not exist.
 
-        `created_at` es la fecha real de emision del stream; `start_time` es ese
-        instante en epoch UTC.
+        `created_at` is the original broadcast time. `start_time` contains the
+        same instant as a UTC Unix timestamp.
         """
         data = self._request("/videos", {"id": video_id})
         videos = data.get("data", [])
@@ -96,15 +96,14 @@ class TwitchAPIClient:
 
     def get_recent_archives(self, login: str, limit: int = 10) -> list[dict]:
         """
-        Obtiene los ultimos VODs (archives) de un canal.
-        Retorna lista de dicts con: id, title, created_at, duration, url, etc.
+        Return the latest archived VODs for a channel.
         """
         user_id = self.get_user_id(login)
         videos = self.get_videos(user_id, limit=limit, period="month")
 
         results = []
         for v in videos:
-            # Parsear duracion ISO 8601 (ej: "4h32m15s" o "PT4H32M15S")
+            # Parse Twitch's duration format, such as 4h32m15s or PT4H32M15S.
             duration_raw = v.get("duration", "0s")
             duration_sec = self._parse_duration(duration_raw)
 
@@ -132,7 +131,7 @@ class TwitchAPIClient:
 
     @staticmethod
     def _parse_duration(raw: str) -> int:
-        """Convierte duracion ISO 8601 de Twitch a segundos."""
+        """Convert a Twitch duration to seconds."""
         raw = raw.upper().replace("PT", "")
         total = 0
         import re
@@ -152,9 +151,9 @@ class TwitchAPIClient:
 if __name__ == "__main__":
     client = TwitchAPIClient()
     if not client.client_id:
-        print("TWITCH_CLIENT_ID no configurado")
+        print("TWITCH_CLIENT_ID is not configured")
         exit(1)
-    login = input("Login de canal: ").strip().lower()
+    login = input("Channel login: ").strip().lower()
     try:
         vods = client.get_recent_archives(login, limit=5)
         for v in vods:

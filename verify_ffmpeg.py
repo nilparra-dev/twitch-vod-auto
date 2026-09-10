@@ -13,12 +13,12 @@ def verify():
         # Try running ffmpeg
         result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
         if result.returncode == 0:
-            print("✅ FFMPEG found and working!")
+            print("FFmpeg is installed and working.")
             print(result.stdout.splitlines()[0])
         else:
-            print("❌ FFMPEG found but returned error code.")
+            print("FFmpeg returned an error code.")
     except FileNotFoundError:
-        print("❌ FFMPEG command not found.")
+        print("FFmpeg was not found.")
 
 
 if __name__ == "__main__":

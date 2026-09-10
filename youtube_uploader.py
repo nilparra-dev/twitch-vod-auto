@@ -76,16 +76,16 @@ class YouTubeUploader:
             os.replace(self.credentials_file, target)
             return target
         except OSError as e:
-            log.warning("No se pudo apartar el token OAuth invalido: %s", e)
+            log.warning("Could not archive the invalid OAuth token: %s", e)
             return None
 
     def _raise_invalid_grant(self, exc: Exception):
         archived = self._archive_bad_credentials()
-        archived_msg = f" Se movio el token antiguo a {archived}." if archived else ""
+        archived_msg = f" The old token was moved to {archived}." if archived else ""
         raise YouTubeAuthError(
-            "Token de YouTube expirado o revocado (invalid_grant)."
-            f"{archived_msg} Ejecuta `python youtube_uploader.py` en una sesion con navegador "
-            "para generar un nuevo youtube_credentials.pkl y vuelve a lanzar el pipeline."
+            "The YouTube token expired or was revoked (invalid_grant)."
+            f"{archived_msg} Run `python youtube_uploader.py` in a browser session "
+            "to create a new youtube_credentials.pkl, then restart the pipeline."
         ) from exc
 
     def _get_authenticated_service(self):
@@ -93,7 +93,7 @@ class YouTubeUploader:
 
         if not credentials or not credentials.valid:
             if credentials and credentials.expired and credentials.refresh_token:
-                log.info("Refrescando token de YouTube...")
+                log.info("Refreshing the YouTube token...")
                 try:
                     credentials.refresh(Request())
                 except RefreshError as e:
@@ -103,10 +103,10 @@ class YouTubeUploader:
             else:
                 if not os.path.exists(self.client_secrets_file):
                     raise FileNotFoundError(
-                        f"No se encontro {self.client_secrets_file}. "
-                        "Descargalo desde Google Cloud Console > Credentials."
+                        f"Could not find {self.client_secrets_file}. "
+                        "Download it from Google Cloud Console > Credentials."
                     )
-                log.info("Iniciando flujo OAuth de YouTube...")
+                log.info("Starting the YouTube OAuth flow...")
                 flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_file, SCOPES)
                 credentials = flow.run_local_server(port=0)
 
@@ -126,10 +126,10 @@ class YouTubeUploader:
         default_language: str = None,
         recording_date=None,
     ):
-        """Construye (body, part) para videos().insert.
+        """Build the body and part values for videos().insert.
 
-        Si `recording_date` (datetime) no es None, fija recordingDetails.recordingDate
-        a la fecha real de grabacion en RFC3339 UTC para que YouTube no use la de subida.
+        When recording_date is set, use the original broadcast time in RFC 3339
+        UTC instead of the upload time.
         """
         body = {
             "snippet": {
@@ -166,7 +166,7 @@ class YouTubeUploader:
         recording_date=None,
     ):
         if not os.path.exists(file_path):
-            raise FileNotFoundError(f"No se encontro: {file_path}")
+            raise FileNotFoundError(f"File not found: {file_path}")
 
         file_size_mb = os.path.getsize(file_path) / 1024 / 1024
         chunk_size = self._chunk_size_bytes(chunk_size_mb)
@@ -182,7 +182,7 @@ class YouTubeUploader:
         )
 
         log.info(
-            "Subiendo a YouTube: %s | %.1f MB | chunk=%d MB | Titulo: %s | Privacidad: %s",
+            "Uploading to YouTube: %s | %.1f MB | chunk=%d MB | title: %s | privacy: %s",
             os.path.basename(file_path),
             file_size_mb,
             chunk_size // 1024 // 1024,
@@ -228,7 +228,7 @@ class YouTubeUploader:
             except HttpError as e:
                 if not self._is_retriable_upload_error(e) or retry_count >= 5:
                     log.error(
-                        "Error HTTP %s subiendo a YouTube: %s",
+                        "YouTube upload returned HTTP %s: %s",
                         e.resp.status,
                         self._http_reason(e),
                     )
@@ -236,7 +236,7 @@ class YouTubeUploader:
                 retry_count += 1
                 delay = min(120, 5 * (2 ** (retry_count - 1)))
                 log.warning(
-                    "[YouTubeUpload] Error temporal HTTP %s: %s. Reintento %d/5 en %ds",
+                    "[YouTubeUpload] Temporary HTTP %s error: %s. Retry %d/5 in %ds",
                     e.resp.status,
                     self._http_reason(e),
                     retry_count,
@@ -249,7 +249,7 @@ class YouTubeUploader:
                 retry_count += 1
                 delay = min(120, 5 * (2 ** (retry_count - 1)))
                 log.warning(
-                    "[YouTubeUpload] Error temporal de red: %s. Reintento %d/5 en %ds",
+                    "[YouTubeUpload] Temporary network error: %s. Retry %d/5 in %ds",
                     e,
                     retry_count,
                     delay,
@@ -260,7 +260,7 @@ class YouTubeUploader:
             progress_callback(100.0, file_size_mb, file_size_mb)
 
         vid = response["id"]
-        log.info("Subida OK. Video ID: %s | URL: https://youtu.be/%s", vid, vid)
+        log.info("Upload complete. Video ID: %s | URL: https://youtu.be/%s", vid, vid)
 
         if thumbnail_path and os.path.exists(thumbnail_path):
             self.set_thumbnail(vid, thumbnail_path)
@@ -275,9 +275,9 @@ class YouTubeUploader:
                 videoId=video_id,
                 media_body=MediaFileUpload(thumbnail_path),
             ).execute()
-            log.info("Miniatura actualizada para %s", video_id)
+            log.info("Thumbnail updated for %s", video_id)
         except Exception as e:
-            log.warning("No se pudo subir miniatura: %s", e)
+            log.warning("Could not upload thumbnail: %s", e)
 
 
 if __name__ == "__main__":
@@ -289,4 +289,4 @@ if __name__ == "__main__":
         cfg["youtube"]["client_secrets_file"],
         cfg["youtube"].get("credentials_file", "youtube_credentials.pkl"),
     )
-    print("Autenticacion OK.")
+    print("Authentication successful.")

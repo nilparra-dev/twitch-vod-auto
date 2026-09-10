@@ -245,7 +245,7 @@ class CredentialsStoreTests(unittest.TestCase):
         path = os.path.join(self.tmp.name, "cred.json")
         save_credentials(self._make_credentials(), path)
 
-        # Se persiste como JSON, no como pickle.
+        # New credentials use JSON rather than pickle.
         with open(path, encoding="utf-8") as fh:
             self.assertIn("refresh_token", json.load(fh))
 
@@ -266,10 +266,10 @@ class CredentialsStoreTests(unittest.TestCase):
         self.assertEqual(loaded.refresh_token, "refresh-token")
 
     def test_saves_in_place_when_rename_busy(self):
-        """En bind mount de archivo unico, os.replace falla con EBUSY (Errno 16).
+        """os.replace fails with EBUSY on a single-file bind mount.
 
-        save_credentials debe degradar a escritura in situ y dejar las
-        credenciales legibles sin restos de .tmp.
+        save_credentials must fall back to an in-place write and leave readable
+        credentials without a temporary file.
         """
         import errno
         import json
@@ -338,7 +338,7 @@ class AutoPipelineStreamDateTests(unittest.TestCase):
 
         class BoomClient:
             def get_video_by_id(self, video_id):
-                raise AssertionError("no debe llamar a la API con start_time valido")
+                raise AssertionError("must not call the API with a valid start_time")
 
         dt = self._pipeline(BoomClient())._resolve_stream_date({"start_time": ts, "video_id": "1"})
 

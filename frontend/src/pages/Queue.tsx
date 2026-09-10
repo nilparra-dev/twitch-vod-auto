@@ -15,22 +15,22 @@ export function Queue() {
 
   return (
     <div>
-      <PageHeader title="Cola" subtitle={`${queue.length} elementos`} />
+      <PageHeader title="Queue" subtitle={`${queue.length} items`} />
 
       <Card className="overflow-hidden">
         {queue.length === 0 ? (
-          <EmptyState icon={<ListVideo size={28} />} title="Cola vacía" hint="No hay descargas pendientes." />
+          <EmptyState icon={<ListVideo size={28} />} title="Queue is empty" hint="No downloads are waiting." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-muted">
-                  <th className="px-5 py-3 font-medium">Canal</th>
+                  <th className="px-5 py-3 font-medium">Channel</th>
                   <th className="px-5 py-3 font-medium">Video ID</th>
-                  <th className="px-5 py-3 font-medium">Estado</th>
-                  <th className="hidden px-5 py-3 font-medium sm:table-cell">Intentos</th>
-                  <th className="hidden px-5 py-3 font-medium lg:table-cell">Encolado</th>
-                  <th className="px-5 py-3 text-right font-medium">Acción</th>
+                  <th className="px-5 py-3 font-medium">Status</th>
+                  <th className="hidden px-5 py-3 font-medium sm:table-cell">Attempts</th>
+                  <th className="hidden px-5 py-3 font-medium lg:table-cell">Queued</th>
+                  <th className="px-5 py-3 text-right font-medium">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -53,10 +53,10 @@ export function Queue() {
                     <td className="px-5 py-3 text-right">
                       <button
                         onClick={() => {
-                          if (confirm(`¿Quitar ${q.video_id} de la cola?`)) remove.mutate(q.vod_id);
+                          if (confirm(`Remove ${q.video_id} from the queue?`)) remove.mutate(q.vod_id);
                         }}
                         className="ml-auto flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-danger/10 hover:text-danger"
-                        title="Quitar de la cola"
+                        title="Remove from queue"
                       >
                         <Trash2 size={15} />
                       </button>

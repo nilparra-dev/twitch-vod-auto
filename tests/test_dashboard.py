@@ -27,15 +27,15 @@ class DashboardRoutingTests(unittest.TestCase):
         self.assertEqual(res.status_code, 404)
 
     def test_spa_fallback_serves_index_or_reports_missing_build(self):
-        # En CI el backend corre sin `frontend/dist` (se compila aparte / en
-        # Docker), así que aceptamos 200 (index servido) o 503 (sin build).
+        # CI runs the backend without frontend/dist, so either a served index or
+        # a missing-build response is valid here.
         res = self.client.get("/vods")
         self.assertIn(res.status_code, (200, 503))
         if res.status_code == 200:
             self.assertIn("text/html", res.headers.get("content-type", ""))
 
     def test_openapi_schema_disabled(self):
-        # F2: el esquema OpenAPI no debe exponerse sin autenticar.
+        # Do not expose the OpenAPI schema without authentication.
         self.assertIsNone(dashboard.app.openapi_url)
         res = self.client.get("/openapi.json")
         self.assertNotIn(b'"openapi"', res.content)
@@ -47,8 +47,8 @@ class LoginRateLimitTests(unittest.TestCase):
         self.client = TestClient(dashboard.app)
 
     def test_rate_limit_keys_on_trusted_ip_not_forwarded_for(self):
-        # F1: rotar X-Forwarded-For NO debe saltarse el límite; se clava la
-        # IP de confianza (X-Real-IP, que en prod fija nginx).
+        # Rotating X-Forwarded-For must not bypass the limit. X-Real-IP is the
+        # trusted address set by the proxy.
         ip = "203.0.113.77"
         last = None
         for i in range(9):

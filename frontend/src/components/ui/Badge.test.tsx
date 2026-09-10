@@ -4,12 +4,12 @@ import { describe, expect, it } from "vitest";
 import { StatusBadge } from "./Badge";
 
 describe("StatusBadge", () => {
-  it("traduce estados conocidos al español", () => {
+  it("formats known statuses", () => {
     render(<StatusBadge status="uploaded" />);
-    expect(screen.getByText("Subido")).toBeInTheDocument();
+    expect(screen.getByText("Uploaded")).toBeInTheDocument();
   });
 
-  it("muestra el estado crudo si es desconocido", () => {
+  it("shows the raw value for an unknown status", () => {
     render(<StatusBadge status="weirdstate" />);
     expect(screen.getByText("weirdstate")).toBeInTheDocument();
   });

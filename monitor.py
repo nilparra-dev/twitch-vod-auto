@@ -28,10 +28,10 @@ class VodMonitor:
             try:
                 self.twitch_client = TwitchAPIClient()
                 if not self.twitch_client.client_id:
-                    log.warning("[Monitor] TWITCH_CLIENT_ID no configurado, deshabilitando Twitch API")
+                    log.warning("[Monitor] TWITCH_CLIENT_ID is not set; disabling Twitch API lookups")
                     self.twitch_client = None
             except Exception as e:
-                log.warning("[Monitor] No se pudo inicializar Twitch API: %s", e)
+                log.warning("[Monitor] Could not initialize the Twitch API: %s", e)
                 self.twitch_client = None
 
         self.session = requests.Session()
@@ -63,7 +63,7 @@ class VodMonitor:
                 resp.raise_for_status()
                 return resp.text
             except requests.exceptions.RequestException as e:
-                log.warning("[fetch] intento %d/%d fallo para %s: %s", attempt, self.max_retries, url, e)
+                log.warning("[fetch] attempt %d/%d failed for %s: %s", attempt, self.max_retries, url, e)
                 if attempt == self.max_retries:
                     raise
                 time.sleep(self.delay * attempt)
@@ -196,12 +196,12 @@ class VodMonitor:
         return None
 
     def _check_twitch_api(self, channel: str):
-        """Fuente primaria: Twitch API oficial."""
+        """Use the official Twitch API as the primary source."""
         if not self.twitch_client:
             return []
         try:
             vods = self.twitch_client.get_recent_archives(channel, limit=10)
-            # Normalizar al formato interno
+            # Normalize to the internal record shape.
             results = []
             for v in vods:
                 results.append(
@@ -224,18 +224,18 @@ class VodMonitor:
         channel = channel_cfg["name"].lower()
         all_streams = []
 
-        # 1. Fuente primaria: Twitch API
+        # 1. Primary source: Twitch API.
         api_streams = self._check_twitch_api(channel)
         all_streams.extend(api_streams)
 
-        # 2. Fallback: trackers (solo si no hay resultados de API o para complementar)
+        # 2. Trackers supplement the API and cover hidden streams.
         if "twitchtracker" in self.sources:
             all_streams.extend(self._parse_twitchtracker(channel))
 
         if "streamscharts" in self.sources:
             all_streams.extend(self._parse_streamscharts(channel))
 
-        # dedup final por video_id, preferir twitch_api > twitchtracker > streamscharts
+        # Deduplicate by video ID, preferring Twitch API metadata.
         priority = {"twitch_api": 0, "twitchtracker": 1, "streamscharts": 2}
         by_id = {}
         for s in all_streams:
@@ -263,7 +263,7 @@ class VodMonitor:
         return new_streams
 
     def check_all_channels(self):
-        log.info("[Monitor] Iniciando chequeo de %d canales", len(self.channels))
+        log.info("[Monitor] Checking %d channels", len(self.channels))
         all_new = []
 
         parallel = self.config["app"].get("parallel_monitor", True)
@@ -275,7 +275,7 @@ class VodMonitor:
                         result = future.result()
                         all_new.extend(result)
                     except Exception as e:
-                        log.error("[Monitor] Error en hilo: %s", e)
+                        log.error("[Monitor] Worker failed: %s", e)
         else:
             for ch in self.channels:
                 try:

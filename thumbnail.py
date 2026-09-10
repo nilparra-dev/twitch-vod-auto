@@ -19,36 +19,36 @@ class ThumbnailGenerator:
 
     def generate(self, video_path: str, output_path: str = None, timestamp: str = "00:00:05") -> str:
         """
-        Extrae un frame del video para usar como thumbnail de YouTube.
-        Por defecto toma el frame a los 5 segundos (evita pantallas de inicio negras).
+        Extract a video frame for use as a YouTube thumbnail.
+        The default five-second offset avoids most black intro frames.
 
         Args:
-            video_path: ruta al MP4 descargado
-            output_path: ruta de salida opcional (default: mismo nombre .jpg)
-            timestamp: momento del video a capturar (HH:MM:SS)
+            video_path: path to the downloaded MP4
+            output_path: optional output path; defaults to the same name with .jpg
+            timestamp: position in the video (HH:MM:SS)
 
         Returns:
-            str: ruta del thumbnail generado, o None si fallo
+            str: generated thumbnail path, or None on failure
         """
         if not self._check_ffmpeg():
-            log.warning("[Thumbnail] ffmpeg no disponible, omitiendo thumbnail")
+            log.warning("[Thumbnail] ffmpeg is unavailable; skipping thumbnail generation")
             return None
 
         if not os.path.exists(video_path):
-            log.warning("[Thumbnail] Video no existe: %s", video_path)
+            log.warning("[Thumbnail] Video does not exist: %s", video_path)
             return None
 
         if not output_path:
             output_path = str(Path(video_path).with_suffix(".jpg"))
 
-        # Evita regenerar
+        # Reuse an existing thumbnail.
         if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
-            log.info("[Thumbnail] Ya existe: %s", output_path)
+            log.info("[Thumbnail] Already exists: %s", output_path)
             return output_path
 
         cmd = [self.ffmpeg, "-ss", timestamp, "-i", video_path, "-vframes", "1", "-q:v", "2", "-y", output_path]
 
-        log.info("[Thumbnail] Generando thumbnail: %s @ %s", os.path.basename(video_path), timestamp)
+        log.info("[Thumbnail] Generating thumbnail: %s @ %s", os.path.basename(video_path), timestamp)
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             if result.returncode == 0 and os.path.exists(output_path):
@@ -58,7 +58,7 @@ class ThumbnailGenerator:
                 log.warning("[Thumbnail] ffmpeg error: %s", result.stderr[:300])
                 return None
         except Exception as e:
-            log.warning("[Thumbnail] Excepcion: %s", e)
+            log.warning("[Thumbnail] Exception: %s", e)
             return None
 
 
@@ -69,4 +69,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         print(gen.generate(sys.argv[1]))
     else:
-        print("Uso: python thumbnail.py <video.mp4>")
+        print("Usage: python thumbnail.py <video.mp4>")

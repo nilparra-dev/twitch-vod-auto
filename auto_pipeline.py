@@ -22,8 +22,8 @@ from youtube_uploader import YouTubeAuthError, YouTubeUploader
 log = logging.getLogger("pipeline")
 MIN_REUSABLE_DOWNLOAD_BYTES = 10 * 1024 * 1024
 REUSABLE_VIDEO_EXTENSIONS = {".mp4"}
-# Twitch existe desde 2011; cualquier start_time fuera de [2011-01-01, ahora+1d]
-# no es una fecha de stream plausible (suele ser un video_id mal interpretado).
+# Twitch launched in 2011. Values outside this range are usually video IDs that
+# were mistaken for Unix timestamps.
 MIN_PLAUSIBLE_STREAM_EPOCH = int(datetime(2011, 1, 1, tzinfo=UTC).timestamp())
 
 
@@ -40,18 +40,16 @@ class AutoPipeline:
         self.db = PipelineDB(self.config["monitoring"]["db_path"])
         self.monitor = VodMonitor(self.config, self.db)
 
-        # Cliente Twitch para resolver la fecha real del stream (created_at).
+        # Twitch client used to resolve the original broadcast date.
         self.twitch_client = None
         if self.config.get("twitch_api", {}).get("enabled", True):
             try:
                 client = TwitchAPIClient()
                 self.twitch_client = client if client.client_id else None
                 if self.twitch_client is None:
-                    log.warning(
-                        "[Pipeline] TWITCH_CLIENT_ID no configurado; no se podra resolver la fecha real del stream"
-                    )
-            except Exception as e:  # pragma: no cover - defensivo
-                log.warning("[Pipeline] No se pudo inicializar TwitchAPIClient: %s", e)
+                    log.warning("[Pipeline] TWITCH_CLIENT_ID is not set; original broadcast dates may be unavailable")
+            except Exception as e:  # pragma: no cover - defensive
+                log.warning("[Pipeline] Could not initialize TwitchAPIClient: %s", e)
 
         self.uploader = None
         self.uploader_credentials_file = None
@@ -61,13 +59,13 @@ class AutoPipeline:
         self.download_queue = queue.Queue()
         self.upload_queue = queue.Queue()
         self.running = True
-        # Config de canales
+        # Channel configuration.
         self.channel_cfgs = {ch["name"].lower(): ch for ch in self.config["twitch"]["channels"]}
 
-        # Cleanup siempre activo (no quedan archivos locales)
+        # Remove local media after successful uploads.
         self.cleanup = True
 
-        # Asegura directorios
+        # Ensure required directories exist.
         os.makedirs(self.config["download"]["output_folder"], exist_ok=True)
 
     def _get_uploader(self):
@@ -130,7 +128,7 @@ class AutoPipeline:
             return None
 
         chosen = max(candidates, key=lambda p: p.stat().st_mtime)
-        log.info("[DownloadWorker] Archivo local existente encontrado para video_id=%s: %s", video_id, chosen)
+        log.info("[DownloadWorker] Found local media for video_id=%s: %s", video_id, chosen)
         return str(chosen)
 
     def _cleanup_local_media(self, file_path: str, video_id: str = None, include_related: bool = False):
@@ -158,9 +156,9 @@ class AutoPipeline:
                     continue
                 seen.add(key)
                 target.unlink()
-                log.info("[UploadWorker] Archivo local eliminado: %s", target)
+                log.info("[UploadWorker] Deleted local file: %s", target)
             except Exception as e:
-                log.warning("[UploadWorker] No se pudo eliminar %s: %s", target, e)
+                log.warning("[UploadWorker] Could not delete %s: %s", target, e)
 
     def _parse_source_meta(self, source):
         if not source or not isinstance(source, str):
@@ -185,7 +183,7 @@ class AutoPipeline:
 
     @staticmethod
     def _epoch_to_plausible_date(start_time):
-        """Devuelve el datetime UTC si `start_time` es una fecha de stream plausible, si no None."""
+        """Return a UTC datetime when start_time is a plausible broadcast date."""
         try:
             ts = int(start_time)
         except (TypeError, ValueError):
@@ -199,10 +197,10 @@ class AutoPipeline:
             return None
 
     def _resolve_stream_date(self, stream_info: dict) -> datetime:
-        """Resuelve la fecha real de emision del stream.
+        """Resolve the original broadcast date.
 
-        1) start_time si es un epoch plausible; 2) Twitch API por video_id
-        (created_at); 3) ahora() como ultimo recurso, con aviso.
+        Prefer a plausible start_time, then Twitch API metadata, then the
+        current time as a documented fallback.
         """
         dt = self._epoch_to_plausible_date(stream_info.get("start_time", 0))
         if dt is not None:
@@ -218,10 +216,10 @@ class AutoPipeline:
                     if dt is not None:
                         return dt
             except Exception as e:
-                log.warning("[Pipeline] No se pudo obtener la fecha del stream desde Twitch API (%s): %s", video_id, e)
+                log.warning("[Pipeline] Could not resolve broadcast date from Twitch API (%s): %s", video_id, e)
 
         log.warning(
-            "[Pipeline] Sin fecha real de stream para %s; usando la fecha actual.",
+            "[Pipeline] No broadcast date found for %s; using the current date.",
             stream_info.get("vod_id") or video_id,
         )
         return datetime.now(UTC)
@@ -238,10 +236,10 @@ class AutoPipeline:
     def _generate_description(self, stream_info: dict, dt: datetime) -> str:
         channel = stream_info["channel"]
         return (
-            f"Stream de {channel} del {dt.strftime('%d/%m/%Y')}.\n\n"
-            f"Video ID Twitch: {stream_info['video_id']}\n"
+            f"Stream by {channel} on {dt.strftime('%Y-%m-%d')}.\n\n"
+            f"Twitch video ID: {stream_info['video_id']}\n"
             f"VOD ID: {stream_info['vod_id']}\n\n"
-            f"Subido automáticamente por twitch-vod-auto."
+            f"Uploaded automatically by twitch-vod-auto."
         )
 
     def _media_tool(self, ffmpeg_folder: str, tool_name: str) -> str:
@@ -272,7 +270,7 @@ class AutoPipeline:
                 return duration if duration > 0 else 0.0
             log.warning("[Reencode] ffprobe rc=%s: %s", result.returncode, (result.stderr or "").strip()[:300])
         except Exception as e:
-            log.warning("[Reencode] No se pudo obtener duracion con ffprobe: %s", e)
+            log.warning("[Reencode] Could not read duration with ffprobe: %s", e)
         return 0.0
 
     @staticmethod
@@ -307,8 +305,10 @@ class AutoPipeline:
             return 0.0
 
     def _reencode_for_youtube(self, file_path: str, vod_id: str) -> str:
-        """Reencode el archivo a h264/aac + faststart para que YouTube lo procese siempre.
-        Devuelve la ruta al nuevo archivo o None si falla (en cuyo caso se usa el original)."""
+        """Re-encode media to H.264/AAC with faststart for YouTube.
+
+        Return the replacement path, or None to keep the original on failure.
+        """
         try:
             download_cfg = self.config.get("download", {})
             ffmpeg_folder = os.path.abspath(download_cfg.get("ffmpeg_folder", "./bin"))
@@ -358,7 +358,7 @@ class AutoPipeline:
                 duration_seconds=duration or None,
                 processed_seconds=0,
                 encoded_mb=0,
-                message="Preparando reencode para YouTube",
+                message="Preparing YouTube encode",
             )
             start = time.time()
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -414,7 +414,7 @@ class AutoPipeline:
                     processed_seconds=processed,
                     encoded_mb=encoded_mb,
                     file_size_mb=encoded_mb,
-                    message="Reencoding para YouTube",
+                    message="Encoding for YouTube",
                     raw_line=raw,
                 )
                 last_update = now
@@ -430,14 +430,14 @@ class AutoPipeline:
             elapsed = int(time.time() - start)
 
             if proc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 1024:
-                # Reemplazar original
+                # Replace the original file.
                 try:
                     src.unlink()
                 except Exception:
                     pass
                 tmp.rename(src)
                 new_size = src.stat().st_size / 1024 / 1024
-                log.info("[Reencode] OK: %s -> %.1f MB en %ds", src.name, new_size, elapsed)
+                log.info("[Reencode] Complete: %s -> %.1f MB in %ds", src.name, new_size, elapsed)
                 DownloadProgress.update(
                     vod_id,
                     percent=100.0,
@@ -445,26 +445,28 @@ class AutoPipeline:
                     elapsed_seconds=elapsed,
                     processed_seconds=duration or None,
                     encoded_mb=new_size,
-                    message="Reencode completado",
+                    message="Encoding complete",
                 )
                 return str(src)
             else:
-                log.error("[Reencode] Fallo rc=%s, size=%s", proc.returncode, tmp.stat().st_size if tmp.exists() else 0)
+                log.error(
+                    "[Reencode] Failed with rc=%s, size=%s", proc.returncode, tmp.stat().st_size if tmp.exists() else 0
+                )
                 DownloadProgress.update(
                     vod_id,
                     stage="encoding",
-                    message=f"Reencode fallido (rc={proc.returncode}); se usara el archivo original",
+                    message=f"Encode failed (rc={proc.returncode}); keeping the original file",
                     raw_line=f"ffmpeg rc={proc.returncode}",
                 )
                 if tmp.exists():
                     tmp.unlink()
                 return None
         except Exception as e:
-            log.error("[Reencode] Excepcion: %s", e)
+            log.error("[Reencode] Exception: %s", e)
             DownloadProgress.update(
                 vod_id,
                 stage="encoding",
-                message=f"Reencode fallido; se usara el archivo original: {e}",
+                message=f"Encode failed; keeping the original file: {e}",
                 raw_line=str(e),
             )
             return None
@@ -484,7 +486,7 @@ class AutoPipeline:
             tracker_url = item.get("tracker_url")
             download_url = item.get("download_url")
 
-            log.info("[DownloadWorker] Iniciando descarga: %s", vod_id)
+            log.info("[DownloadWorker] Starting download: %s", vod_id)
             self.db.update_vod_status(vod_id, "downloading")
 
             safe_name = sanitize_filename(f"{channel}_{video_id}")
@@ -492,7 +494,7 @@ class AutoPipeline:
 
             file_path = self._find_existing_download(output_filename, video_id)
             if file_path:
-                log.info("[DownloadWorker] Saltando descarga; se reutiliza archivo local: %s", file_path)
+                log.info("[DownloadWorker] Reusing local file: %s", file_path)
             else:
                 try:
                     file_path = download_vod_with_retry(
@@ -505,7 +507,7 @@ class AutoPipeline:
                         video_id=video_id,
                     )
                 except Exception as e:
-                    err = f"Descarga fallida tras retries: {e}"
+                    err = f"Download failed after retries: {e}"
                     self.db.update_vod_status(vod_id, "failed", error=err)
                     self.db.mark_queue_status(vod_id, "failed", error=err)
                     self.db.increment_stat(channel, "failed")
@@ -514,7 +516,7 @@ class AutoPipeline:
                     continue
 
             if file_path and os.path.exists(file_path):
-                log.info("[DownloadWorker] Reencode deshabilitado; se subira el archivo local tal cual.")
+                log.info("[DownloadWorker] Encoding is disabled; uploading the local file unchanged.")
 
                 size_mb = get_file_size_mb(file_path)
                 DownloadProgress.complete(vod_id, file_size_mb=size_mb)
@@ -530,9 +532,9 @@ class AutoPipeline:
                         "file_path": file_path,
                     }
                 )
-                log.info("[DownloadWorker] Descarga OK: %s -> %s (%.1f MB)", vod_id, file_path, size_mb)
+                log.info("[DownloadWorker] Download complete: %s -> %s (%.1f MB)", vod_id, file_path, size_mb)
             else:
-                err = "Fallo la descarga o archivo no generado"
+                err = "Download failed or produced no file"
                 self.db.update_vod_status(vod_id, "failed", error=err)
                 self.db.mark_queue_status(vod_id, "failed", error=err)
                 self.db.increment_stat(channel, "failed")
@@ -558,7 +560,7 @@ class AutoPipeline:
                 "start_time": item["start_time"],
             }
 
-            log.info("[UploadWorker] Iniciando subida: %s", vod_id)
+            log.info("[UploadWorker] Starting upload: %s", vod_id)
             self.db.update_vod_status(vod_id, "uploading")
             self.db.mark_queue_status(vod_id, "uploading")
 
@@ -587,7 +589,7 @@ class AutoPipeline:
                     downloaded_mb=0.0,
                     speed="",
                     eta="",
-                    message="Subiendo a YouTube",
+                    message="Uploading to YouTube",
                 )
                 upload_started = time.time()
                 last_upload_progress = 0
@@ -616,7 +618,7 @@ class AutoPipeline:
                         speed=speed,
                         eta=eta,
                         elapsed_seconds=elapsed,
-                        message="Subiendo a YouTube",
+                        message="Uploading to YouTube",
                         raw_line=f"uploaded={uploaded_mb:.1f}MB/{total_mb:.1f}MB",
                     )
                     last_upload_progress = now
@@ -640,7 +642,7 @@ class AutoPipeline:
                 self.db.increment_stat(channel, "uploaded")
                 uploaded = True
                 DownloadProgress.complete(vod_id, file_size_mb=file_size_mb)
-                log.info("[UploadWorker] Subida OK %s -> https://youtu.be/%s", vod_id, youtube_id)
+                log.info("[UploadWorker] Upload complete %s -> https://youtu.be/%s", vod_id, youtube_id)
 
             except YouTubeAuthError as e:
                 self.uploader = None
@@ -658,7 +660,7 @@ class AutoPipeline:
                 self.db.update_vod_status(vod_id, "failed", error=err, file_path=file_path)
                 self.db.mark_queue_status(vod_id, "failed", error=err)
                 self.db.increment_stat(channel, "failed")
-                log.error("[UploadWorker] ERROR subiendo %s: %s", vod_id, err)
+                log.error("[UploadWorker] Upload failed for %s: %s", vod_id, err)
                 traceback.print_exc()
 
             finally:
@@ -677,7 +679,7 @@ class AutoPipeline:
         max_dl = self.config["app"].get("max_workers_download", 2)
         max_ul = self.config["app"].get("max_workers_upload", 1)
 
-        log.info("[Pipeline] Arrancando %d download workers y %d upload workers", max_dl, max_ul)
+        log.info("[Pipeline] Starting %d download workers and %d upload workers", max_dl, max_ul)
 
         self.dl_threads = []
         for _ in range(max_dl):
@@ -691,13 +693,13 @@ class AutoPipeline:
             t.start()
             self.ul_threads.append(t)
 
-        # Hilo separado para verificar cola manual cada 5 segundos
+        # Poll manually queued work every five seconds.
         self.manual_queue_thread = threading.Thread(target=self._manual_queue_loop, daemon=True)
         self.manual_queue_thread.start()
-        log.info("[Pipeline] Hilo de cola manual iniciado (chequeo cada 5s)")
+        log.info("[Pipeline] Manual queue poller started with a five-second interval")
 
     def _manual_queue_loop(self):
-        """Loop infinito que revisa la cola manual de la DB cada 5 segundos."""
+        """Poll manually queued database records every five seconds."""
         while self.running:
             try:
                 count = 0
@@ -707,14 +709,14 @@ class AutoPipeline:
                         break
                     count += 1
                 if count > 0:
-                    log.info("[Pipeline] %d VOD(s) encolado(s) desde cola manual", count)
+                    log.info("[Pipeline] Added %d manually queued VOD(s)", count)
             except Exception as e:
-                log.error("[Pipeline] ERROR en hilo de cola manual: %s", e)
+                log.error("[Pipeline] Manual queue poller failed: %s", e)
                 traceback.print_exc()
             time.sleep(5)
 
     def _check_manual_queue(self):
-        """Lee la cola manual de la DB y la pone en la queue de Python."""
+        """Move one database record into the in-process download queue."""
         try:
             queued = self.db.dequeue()
             if queued:
@@ -728,48 +730,47 @@ class AutoPipeline:
                     "download_url": queued.get("download_url"),
                 }
                 self.download_queue.put(item)
-                log.info("[Pipeline] Encolado desde cola manual: %s", item["vod_id"])
+                log.info("[Pipeline] Added manual queue item: %s", item["vod_id"])
                 return True
         except Exception as e:
-            log.error("[Pipeline] ERROR leyendo cola manual: %s", e)
+            log.error("[Pipeline] Could not read the manual queue: %s", e)
         return False
 
     def run_once(self):
         log.info("=" * 60)
-        log.info("[Pipeline] Ciclo de monitoreo: %s", datetime.now(UTC).isoformat())
+        log.info("[Pipeline] Monitoring cycle: %s", datetime.now(UTC).isoformat())
         log.info("=" * 60)
 
-        # Monitorear canales automáticos
+        # Monitor configured channels.
         try:
             new_streams = self.monitor.check_all_channels()
         except Exception as e:
-            log.error("[Pipeline] ERROR en monitoreo: %s", e)
+            log.error("[Pipeline] Monitoring failed: %s", e)
             traceback.print_exc()
             return
 
         if not new_streams:
-            log.info("[Pipeline] No hay streams nuevos.")
+            log.info("[Pipeline] No new streams found.")
         else:
             for s in new_streams:
                 self.db.enqueue(s)
-                log.info("[Pipeline] Encolado en DB para descarga: %s", s["vod_id"])
+                log.info("[Pipeline] Queued in database for download: %s", s["vod_id"])
 
     def _install_signal_handlers(self):
-        """Apagado graceful: SIGTERM/SIGINT detienen el bucle y drenan las colas.
+        """Stop the loop on SIGTERM or SIGINT and drain active queues.
 
-        Necesario para que `docker stop` (SIGTERM) cierre limpiamente en vez de
-        ser forzado con SIGKILL tras el periodo de gracia.
+        This lets `docker stop` finish cleanly before its SIGKILL deadline.
         """
 
         def _handler(signum, _frame):
-            log.info("[Pipeline] Senal %s recibida; iniciando apagado graceful...", signum)
+            log.info("[Pipeline] Received signal %s; shutting down...", signum)
             self.running = False
 
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 signal.signal(sig, _handler)
             except (ValueError, OSError):
-                # No estamos en el hilo principal o la plataforma no lo soporta.
+                # Signal handlers require the main thread and platform support.
                 pass
 
     def run_loop(self):
@@ -779,37 +780,37 @@ class AutoPipeline:
         self._install_signal_handlers()
         self._start_workers()
 
-        log.info("[Pipeline] Bucle automatico iniciado. Intervalo: %d min", interval)
-        log.info("[Pipeline] Presiona Ctrl+C para detener")
+        log.info("[Pipeline] Automatic loop started with a %d-minute interval", interval)
+        log.info("[Pipeline] Press Ctrl+C to stop")
 
         while self.running:
             try:
                 self.run_once()
             except KeyboardInterrupt:
-                log.info("[Pipeline] Detenido por usuario.")
+                log.info("[Pipeline] Stopped by user.")
                 self.running = False
                 break
             except Exception as e:
-                log.error("[Pipeline] ERROR inesperado: %s", e)
+                log.error("[Pipeline] Unexpected error: %s", e)
                 traceback.print_exc()
 
             if self.running:
-                log.info("[Pipeline] Proximo chequeo en %d minutos...", interval)
-                # Sleep en tramos cortos para reaccionar rapido a SIGTERM/SIGINT.
+                log.info("[Pipeline] Next check in %d minutes...", interval)
+                # Sleep in short intervals to respond quickly to signals.
                 slept = 0
                 while slept < interval_seconds and self.running:
                     try:
                         time.sleep(min(5, interval_seconds - slept))
                     except KeyboardInterrupt:
-                        log.info("[Pipeline] Detenido por usuario.")
+                        log.info("[Pipeline] Stopped by user.")
                         self.running = False
                         break
                     slept += 5
 
-        log.info("[Pipeline] Esperando que terminen workers...")
+        log.info("[Pipeline] Waiting for workers to finish...")
         self.download_queue.join()
         self.upload_queue.join()
-        log.info("[Pipeline] Apagado completo.")
+        log.info("[Pipeline] Shutdown complete.")
 
 
 def main():

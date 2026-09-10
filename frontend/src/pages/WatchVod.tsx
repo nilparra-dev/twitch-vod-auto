@@ -21,7 +21,7 @@ export function WatchVod() {
 
   return (
     <div>
-      <PageHeader title="Ver VOD" subtitle="Obtén el enlace M3U8 sin descargar el vídeo" />
+      <PageHeader title="Watch VOD" subtitle="Get a playable M3U8 URL without downloading the video" />
       <div className="space-y-5">
         <Card>
           <CardBody>
@@ -33,26 +33,26 @@ export function WatchVod() {
               }}
             >
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted">URL, ID o target del VOD</label>
+                <label className="text-xs font-medium text-muted">VOD URL, ID, or target</label>
                 <Input
                   autoFocus
                   required
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
-                  placeholder="Twitch, TwitchTracker, StreamsCharts, SullyGnome o video:canal_id_timestamp"
+                  placeholder="Twitch, TwitchTracker, Streams Charts, SullyGnome, or video:channel_id_timestamp"
                 />
                 <p className="text-xs text-muted/70">
-                  Para un stream oculto usa la URL del tracker o el formato video:canal_streamId_timestamp.
+                  For a hidden stream, use its tracker URL or video:channel_streamId_timestamp.
                 </p>
               </div>
               {resolve.isError && (
                 <p className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-                  {resolve.error instanceof Error ? resolve.error.message : "No se pudo resolver el VOD"}
+                  {resolve.error instanceof Error ? resolve.error.message : "Could not resolve this VOD"}
                 </p>
               )}
               <Button type="submit" disabled={resolve.isPending || !value.trim()}>
                 {resolve.isPending ? <Spinner className="text-accent-fg" /> : <Play size={16} />}
-                Buscar M3U8
+                Find M3U8
               </Button>
             </form>
           </CardBody>
@@ -62,10 +62,10 @@ export function WatchVod() {
           <Card>
             <CardBody className="space-y-5">
               <div>
-                <h2 className="font-tight text-lg font-semibold text-fg">Playlists encontradas</h2>
+                <h2 className="font-tight text-lg font-semibold text-fg">Available playlists</h2>
                 <p className="mt-1 text-sm text-muted">
                   {resolve.data.channel ? `${resolve.data.channel} · ` : ""}
-                  {resolve.data.kind === "hidden" ? "VOD oculto" : `VOD ${resolve.data.video_id}`}
+                  {resolve.data.kind === "hidden" ? "Hidden VOD" : `VOD ${resolve.data.video_id}`}
                   {resolve.data.started_at ? ` · ${new Date(resolve.data.started_at).toLocaleString()}` : ""}
                 </p>
                 {resolve.data.canonical_target && (
@@ -87,7 +87,7 @@ export function WatchVod() {
                     <div className="flex gap-2">
                       <Button type="button" size="sm" variant="secondary" onClick={() => copy(format.url)}>
                         {copied === format.url ? <Check size={15} /> : <Clipboard size={15} />}
-                        {copied === format.url ? "Copiado" : "Copiar"}
+                        {copied === format.url ? "Copied" : "Copy"}
                       </Button>
                       <a
                         href={format.url}
@@ -95,14 +95,14 @@ export function WatchVod() {
                         rel="noreferrer"
                         className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-line bg-surface px-3 text-sm font-medium text-fg transition-colors hover:bg-elevated"
                       >
-                        <ExternalLink size={15} /> Abrir
+                        <ExternalLink size={15} /> Open
                       </a>
                     </div>
                   </div>
                 ))}
               </div>
               <p className="text-xs text-muted">
-                Si el navegador no reproduce el enlace, cópialo y usa VLC: Medio → Abrir ubicación de red.
+                If your browser cannot play the URL, copy it into VLC under Media → Open Network Stream.
               </p>
             </CardBody>
           </Card>

@@ -13,7 +13,7 @@ const STORAGE_KEY = "vodauto-theme";
 function initial(): Theme {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved === "light" || saved === "dark") return saved;
-  return "dark"; // dark por defecto
+  return "dark"; // Default to dark mode.
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
@@ -34,6 +34,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useTheme() {
   const ctx = useContext(Ctx);
-  if (!ctx) throw new Error("useTheme debe usarse dentro de ThemeProvider");
+  if (!ctx) throw new Error("useTheme must be used inside ThemeProvider");
   return ctx;
 }

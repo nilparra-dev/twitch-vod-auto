@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from dotenv import load_dotenv
 
-# Carga .env automaticamente si existe
+# Load .env automatically when present.
 load_dotenv()
 
 # ==========================
@@ -105,7 +105,7 @@ def get_file_size_mb(path: str) -> float:
 
 def parse_size_to_mb(size_str: str) -> float:
     """
-    Convierte strings tipo '471.32MiB', '1.2GiB', '500KiB' a megabytes.
+    Convert values such as '471.32MiB', '1.2GiB', and '500KiB' to megabytes.
     """
     try:
         s = size_str.strip()
@@ -131,20 +131,20 @@ def parse_size_to_mb(size_str: str) -> float:
 
 def parse_twitch_vod_url(url: str) -> dict:
     """
-    Parsea una URL de Twitch VOD y retorna dict con channel, video_id, vod_id.
-    Soporta:
+    Parse a Twitch VOD URL into channel, video_id, and vod_id fields.
+    Supported inputs:
       - https://www.twitch.tv/videos/123456789
       - https://www.twitch.tv/channel/videos/123456789
-      - video:channel_123_456 (ya es vod_id)
+      - video:channel_123_456 (an existing internal vod_id)
       - https://twitchtracker.com/channel/streams/123456
       - https://streamscharts.com/channels/channel/streams/123456
-    Retorna None si no es parseable.
+    Return None when the input cannot be parsed.
     """
     import re
 
     url = url.strip()
 
-    # Ya es un vod_id interno
+    # Existing internal vod_id.
     if url.startswith("video:"):
         parts = url.split("_")
         if len(parts) >= 3:
@@ -156,8 +156,7 @@ def parse_twitch_vod_url(url: str) -> dict:
             }
         return {"vod_id": url, "channel": "", "video_id": "", "start_time": 0}
 
-    # URL de twitchtracker.com
-    # Ej: https://twitchtracker.com/xqc/streams/51582913581
+    # TwitchTracker URL.
     m_tracker = re.search(r"twitchtracker\.com/([^/]+)/streams/(\d+)", url)
     if m_tracker:
         channel = m_tracker.group(1)
@@ -176,8 +175,7 @@ def parse_twitch_vod_url(url: str) -> dict:
             "download_url": f"https://www.twitch.tv/videos/{video_id}",
         }
 
-    # URL de streamscharts.com
-    # Ej: https://streamscharts.com/channels/lirik/streams/51579711693
+    # Streams Charts URL.
     m_charts = re.search(r"streamscharts\.com/channels/([^/]+)/streams/(\d+)", url)
     if m_charts:
         channel = m_charts.group(1)
@@ -195,11 +193,11 @@ def parse_twitch_vod_url(url: str) -> dict:
             "download_url": f"https://www.twitch.tv/videos/{video_id}",
         }
 
-    # URL de twitch
+    # Twitch URL.
     m = re.search(r"twitch\.tv/(?:[^/]+/)?videos/(\d+)", url)
     if m:
         video_id = m.group(1)
-        # Twitch video IDs son timestamps en segundos (aprox, siempre < 10 digitos)
+        # Preserve the legacy timestamp heuristic for Twitch video IDs.
         try:
             vid_int = int(video_id)
             start_time = vid_int if vid_int < 10_000_000_000 else 0
@@ -213,7 +211,7 @@ def parse_twitch_vod_url(url: str) -> dict:
             "download_url": f"https://www.twitch.tv/videos/{video_id}",
         }
 
-    # Intentar extraer canal de URL tipo twitch.tv/channel
+    # Try to extract a channel from twitch.tv/channel URLs.
     m2 = re.search(r"twitch\.tv/([^/]+)", url)
     if m2:
         channel = m2.group(1)
@@ -229,5 +227,5 @@ def parse_twitch_vod_url(url: str) -> dict:
 
 if __name__ == "__main__":
     log = setup_logging("DEBUG", "logs/test.log")
-    log.info("Test de logging exitoso")
-    print("sanitize:", sanitize_filename("video:canal_123_456?*"))
+    log.info("Logging test passed")
+    print("sanitize:", sanitize_filename("video:channel_123_456?*"))

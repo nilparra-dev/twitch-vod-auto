@@ -1,6 +1,5 @@
-// Cliente tipado de la API FastAPI. Mismo origen → la cookie de sesión viaja
-// automáticamente. Un 401 se traduce a UnauthorizedError para que el router
-// redirija al login.
+// Typed FastAPI client. Same-origin requests include the session cookie.
+// Convert 401 responses into UnauthorizedError so the router can redirect.
 
 export class ApiError extends Error {
   status: number;
@@ -12,7 +11,7 @@ export class ApiError extends Error {
 }
 
 export class UnauthorizedError extends ApiError {
-  constructor(message = "No autenticado") {
+  constructor(message = "Not authenticated") {
     super(401, message);
     this.name = "UnauthorizedError";
   }
