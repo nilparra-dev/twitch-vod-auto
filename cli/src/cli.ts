@@ -10,6 +10,7 @@ import { stdin, stderr, stdout } from "node:process";
 
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, parseInput, ResolveError, resolveM3U8 } from "./resolver.js";
 import { chatCommand } from "./chat/command.js";
+import { downloadCommand } from "./download/command.js";
 import { listCommand } from "./list.js";
 import { targetCommand } from "./target.js";
 import { watchCommand } from "./watch/command.js";
@@ -44,8 +45,9 @@ Resolve public and hidden Twitch VODs to M3U8 URLs.
 
 Usage:
   twitch-m3u8 <URL|ID|video:...> [options]
+  twitch-m3u8 download <URL|ID|video:...> [-o file.ts]
   twitch-m3u8 target <channel> [stream-id]
-  twitch-m3u8 list <channel> [--probe] [--target N | --url N | --watch N]
+  twitch-m3u8 list <channel> [--probe] [--target N | --download N | --url N | --watch N]
   twitch-m3u8 chat <URL|ID|video:...> --output <chat.json>
   twitch-m3u8 watch [URL|ID|video:...] [--channel CHANNEL]
 
@@ -54,6 +56,7 @@ Examples:
   twitch-m3u8 51582913581 --channel xqc
   twitch-m3u8 "https://twitchtracker.com/xqc/streams/51582913581"
   twitch-m3u8 "video:xqc_51582913581_1721686515" --open vlc
+  twitch-m3u8 download "video:xqc_51582913581_1721686515" -o clip.ts
   twitch-m3u8 target xqc
   twitch-m3u8 list xqc --probe
 
@@ -216,6 +219,10 @@ async function main(): Promise<void> {
   }
   if (process.argv[2] === "list") {
     await listCommand(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "download") {
+    await downloadCommand(process.argv.slice(3));
     return;
   }
   if (process.argv[2] === "target" || process.argv[2] === "id") {

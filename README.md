@@ -53,6 +53,12 @@ Watch a recovered VOD with synchronized chat in a local player:
 npx twitch-vod-m3u8@beta watch URL_OR_ID
 ```
 
+Download a VOD as a single file:
+
+```bash
+npx twitch-vod-m3u8@beta download URL_OR_ID
+```
+
 List recent streams of a channel, including hidden ones, and open one directly:
 
 ```bash
@@ -126,10 +132,11 @@ Options:
 --all                       Walk every Twitch archive page
 --probe                     Check media availability and show the domain
 --target <n>                Print the canonical video: target for row n
+--download <n>              Download stream n as a single file
 --url <n>                   Print the playable URL for row n
 --watch <n>                 Open the local player for row n
 --no-open                   With --watch, do not open a browser
--q, --quality <quality>     Quality for --url (default best)
+-q, --quality <quality>     Quality for --download/--url (default best)
 --timestamp-window <secs>   Search window for approximate timestamps
 --json                      Print structured JSON
 ```
@@ -188,6 +195,24 @@ unavailable, the resolver falls back to a bounded second-by-second search
 around the provided timestamp (`--timestamp-window`, default 120). A canonical
 `video:...` target therefore works with an approximate start time close to the
 real one.
+
+## Downloading VODs
+
+`download` saves the selected quality as a single file without external tools:
+
+```bash
+npx twitch-vod-m3u8@beta download 2434567890
+npx twitch-vod-m3u8@beta download "video:xqc_51582913581_1721686515" -q 720p60 -o clip.ts
+npx twitch-vod-m3u8@beta download 51582913581 --channel xqc
+npx twitch-vod-m3u8@beta list xqc --download 1
+```
+
+Segments are fetched in parallel and written in order, so an interrupted
+download keeps a `.part` file and resumes when you run the same command again.
+Output defaults to `downloads/<id>.ts`; existing files and partial downloads
+are never overwritten without `--force`. `-o file.mp4` or `--remux` converts to
+MP4 with ffmpeg (`-c copy`, no re-encode); without ffmpeg the `.ts` file plays
+in VLC, MPV and most editors.
 
 ## Chat archiving
 
