@@ -90,13 +90,14 @@ async function main() {
       throw new Error(`--version printed "${printed}" instead of "${version}".`);
     }
     const help = run(process.execPath, [cli, "--help"], { cwd: consumer });
-    for (const command of ["chat", "watch", "list", "target"]) {
+    for (const command of ["chat", "watch", "list", "target", "download"]) {
       if (!help.includes(command)) throw new Error(`--help does not list the "${command}" command.`);
     }
     run(process.execPath, [cli, "chat", "--help"], { cwd: consumer });
     run(process.execPath, [cli, "watch", "--help"], { cwd: consumer });
     run(process.execPath, [cli, "list", "--help"], { cwd: consumer });
     run(process.execPath, [cli, "target", "--help"], { cwd: consumer });
+    run(process.execPath, [cli, "download", "--help"], { cwd: consumer });
 
     const apiCheck = join(consumer, "check-api.mjs");
     await writeFile(
@@ -124,7 +125,7 @@ if (target.kind !== "public" || target.videoId !== "2434567890") {
 try {
   const tarball = await main();
   console.log(
-    `Package smoke test passed: ${tarball} (CLI, list/chat/watch help, player assets and public API).`,
+    `Package smoke test passed: ${tarball} (CLI, list/chat/watch/download help, player assets and public API).`,
   );
 } catch (error) {
   console.error(`Package smoke test failed: ${error instanceof Error ? error.message : String(error)}`);

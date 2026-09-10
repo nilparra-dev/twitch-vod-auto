@@ -3,6 +3,7 @@ import { createInterface } from "node:readline/promises";
 
 import { mapWithConcurrency } from "./concurrency.js";
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, ResolveError, resolveM3U8 } from "./resolver.js";
+import { downloadCommand } from "./download/command.js";
 import { fetchChannelVideos, GqlClient, type ChannelVideoNode } from "./twitch/gql.js";
 import {
   fetchStreamerVitalsStreams,
@@ -234,10 +235,11 @@ Options:
   --all                       Walk every Twitch archive page
   --probe                     Check media availability and show the domain
   --target <n>                Print the canonical video: target for row n
+  --download <n>              Download stream n as a single file
   --url <n>                   Print the playable URL for row n
   --watch <n>                 Open the local player for row n
   --no-open                   With --watch, do not open a browser
-  -q, --quality <quality>     Quality for --url (default best)
+  -q, --quality <quality>     Quality for --download/--url (default best)
   --timestamp-window <secs>   Search window for approximate timestamps (default ${DEFAULT_TIMESTAMP_WINDOW})
   --json                      Print structured JSON
   -h, --help                  Show this help
@@ -246,6 +248,7 @@ Examples:
   twitch-m3u8 list xqc
   twitch-m3u8 list xqc --probe
   twitch-m3u8 list xqc --target 1
+  twitch-m3u8 list xqc --download 1 -q 720p60
   twitch-m3u8 list xqc --url 2 --quality 720p60
   twitch-m3u8 list xqc --watch 2
   twitch-m3u8 list xqc --limit 30 --json`;
@@ -265,6 +268,8 @@ interface ListOptions {
   watchIndex?: number;
   targetRequested: boolean;
   targetIndex?: number;
+  downloadRequested: boolean;
+  downloadIndex?: number;
 }
 
 function requireInteger(args: string[], index: number, option: string, minimum: number, maximum: number): number {
@@ -288,6 +293,7 @@ function parseListArgs(args: string[]): ListOptions {
     urlRequested: false,
     watchRequested: false,
     targetRequested: false,
+    downloadRequested: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -311,7 +317,7 @@ function parseListArgs(args: string[]): ListOptions {
     } else if (arg === "--timestamp-window") {
       options.timestampWindow = requireInteger(args, index, arg, 0, 900);
       index += 1;
-    } else if (arg === "--url" || arg === "--watch" || arg === "--target") {
+    } else if (arg === "--url" || arg === "--watch" || arg === "--target" || arg === "--download") {
       const next = args[index + 1];
       const parsed = next && /^\d+$/.test(next) ? Number.parseInt(next, 10) : undefined;
       if (parsed !== undefined) index += 1;
@@ -324,9 +330,12 @@ function parseListArgs(args: string[]): ListOptions {
       } else if (arg === "--watch") {
         options.watchRequested = true;
         if (parsed !== undefined) options.watchIndex = parsed;
-      } else {
+      } else if (arg === "--target") {
         options.targetRequested = true;
         if (parsed !== undefined) options.targetIndex = parsed;
+      } else {
+        options.downloadRequested = true;
+        if (parsed !== undefined) options.downloadIndex = parsed;
       }
     } else if (arg.startsWith("-")) {
       throw new ResolveError(`Unknown list option: ${arg}`, "INVALID_ARGUMENT");
@@ -441,12 +450,14 @@ export async function listCommand(args: string[]): Promise<void> {
     target: streamTarget(login, stream),
   }));
 
-  if (options.targetRequested || options.urlRequested || options.watchRequested) {
+  if (options.targetRequested || options.downloadRequested || options.urlRequested || options.watchRequested) {
     const selected = options.targetRequested
       ? (options.targetIndex ?? (await promptIndex(entries)))
-      : options.urlRequested
-        ? (options.urlIndex ?? (await promptIndex(entries)))
-        : (options.watchIndex ?? (await promptIndex(entries)));
+      : options.downloadRequested
+        ? (options.downloadIndex ?? (await promptIndex(entries)))
+        : options.urlRequested
+          ? (options.urlIndex ?? (await promptIndex(entries)))
+          : (options.watchIndex ?? (await promptIndex(entries)));
     const entry = entries[selected - 1];
     if (!entry?.target) {
       throw new ResolveError(
@@ -460,6 +471,16 @@ export async function listCommand(args: string[]): Promise<void> {
       } else {
         stdout.write(`${entry.target}\n`);
       }
+      return;
+    }
+    if (options.downloadRequested) {
+      await downloadCommand([
+        entry.target,
+        "--quality",
+        options.quality,
+        "--timestamp-window",
+        String(options.timestampWindow),
+      ]);
       return;
     }
     if (options.watchRequested) {
@@ -503,6 +524,6 @@ export async function listCommand(args: string[]): Promise<void> {
   printTable(entries, options.probe);
   stderr.write(
     `\nDurations without --probe are tracker estimates. Use "twitch-m3u8 list ${login} --probe" for the exact media duration,\n` +
-      `"--target N" for the canonical video: target, "--url N" for the playable URL, or "--watch N" to open the player.\n`,
+      `"--target N" for the canonical video: target, "--download N" to save the stream, "--url N" for the playable URL, or "--watch N" to open the player.\n`,
   );
 }
