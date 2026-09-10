@@ -8,7 +8,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { stdin, stderr, stdout } from "node:process";
 
-import { chooseFormat, parseInput, ResolveError, resolveM3U8 } from "./resolver.js";
+import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, parseInput, ResolveError, resolveM3U8 } from "./resolver.js";
+import { chatCommand } from "./chat/command.js";
+import { listCommand } from "./list.js";
+import { targetCommand } from "./target.js";
+import { watchCommand } from "./watch/command.js";
 
 function readPackageVersion(): string {
   const metadata: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -30,6 +34,7 @@ interface CliOptions {
   copy: boolean;
   open: boolean;
   player?: string;
+  timestampWindow: number;
 }
 
 function help(): string {
@@ -39,22 +44,29 @@ Resolve public and hidden Twitch VODs to M3U8 URLs.
 
 Usage:
   twitch-m3u8 <URL|ID|video:...> [options]
+  twitch-m3u8 target <channel> [stream-id]
+  twitch-m3u8 list <channel> [--probe] [--target N | --url N | --watch N]
+  twitch-m3u8 chat <URL|ID|video:...> --output <chat.json>
+  twitch-m3u8 watch [URL|ID|video:...] [--channel CHANNEL]
 
 Examples:
   twitch-m3u8 2434567890
   twitch-m3u8 51582913581 --channel xqc
   twitch-m3u8 "https://twitchtracker.com/xqc/streams/51582913581"
   twitch-m3u8 "video:xqc_51582913581_1721686515" --open vlc
+  twitch-m3u8 target xqc
+  twitch-m3u8 list xqc --probe
 
 Options:
-  -q, --quality <quality>  Select a quality; defaults to best
-  --channel <channel>      Channel for a hidden stream ID
-  --all                    Print every available quality
-  --json                   Print structured JSON
-  --copy                   Copy the selected URL to the clipboard
-  --open [player]          Open VLC, MPV, IINA, or PotPlayer
-  -h, --help               Show this help
-  -v, --version            Show the version`;
+  -q, --quality <quality>      Select a quality; defaults to best
+  --channel <channel>          Channel for a hidden stream ID
+  --timestamp-window <secs>    Seconds searched around an approximate timestamp (default ${DEFAULT_TIMESTAMP_WINDOW})
+  --all                        Print every available quality
+  --json                       Print structured JSON
+  --copy                       Copy the selected URL to the clipboard
+  --open [player]              Open VLC, MPV, IINA, or PotPlayer
+  -h, --help                   Show this help
+  -v, --version                Show the version`;
 }
 
 function requireValue(args: string[], index: number, option: string): string {
@@ -64,7 +76,14 @@ function requireValue(args: string[], index: number, option: string): string {
 }
 
 function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { quality: "best", all: false, json: false, copy: false, open: false };
+  const options: CliOptions = {
+    quality: "best",
+    all: false,
+    json: false,
+    copy: false,
+    open: false,
+    timestampWindow: DEFAULT_TIMESTAMP_WINDOW,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
@@ -81,6 +100,14 @@ function parseArgs(args: string[]): CliOptions {
       index += 1;
     } else if (arg === "--channel") {
       options.channel = requireValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--timestamp-window") {
+      const value = requireValue(args, index, arg);
+      const parsed = Number.parseInt(value, 10);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 900 || String(parsed) !== value) {
+        throw new ResolveError("--timestamp-window requires an integer between 0 and 900.", "INVALID_ARGUMENT");
+      }
+      options.timestampWindow = parsed;
       index += 1;
     } else if (arg === "--all") {
       options.all = true;
@@ -179,12 +206,30 @@ function copyToClipboard(value: string): void {
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === "watch") {
+    await watchCommand(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "chat") {
+    await chatCommand(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "list") {
+    await listCommand(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "target" || process.argv[2] === "id") {
+    await targetCommand(process.argv.slice(3));
+    return;
+  }
   const options = await askForMissingChannel(await askInput(parseArgs(process.argv.slice(2))));
   if (!options.input) throw new ResolveError("Missing URL or ID.");
 
   if (stderr.isTTY) stderr.write("Searching Twitch playlists...\n");
-  const resolveOptions = options.channel ? { channel: options.channel } : {};
-  const result = await resolveM3U8(options.input, resolveOptions);
+  const result = await resolveM3U8(options.input, {
+    timestampWindow: options.timestampWindow,
+    ...(options.channel ? { channel: options.channel } : {}),
+  });
   const selected = chooseFormat(result.formats, options.quality);
 
   if (options.json) {
@@ -207,6 +252,11 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  stderr.write(`Error: ${message}\n`);
+  if (process.argv.includes("--json")) {
+    const code = error instanceof ResolveError ? error.code : "ERROR";
+    stdout.write(`${JSON.stringify({ error: { code, message } })}\n`);
+  } else {
+    stderr.write(`Error: ${message}\n`);
+  }
   process.exitCode = 1;
 });

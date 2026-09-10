@@ -36,8 +36,31 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Verify package
-        run: npm pack --dry-run
+  package:
+    name: Package smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install CLI dependencies
+        run: npm ci
+
+      - name: Build package artifacts
+        run: npm run build:package
+
+      - name: Smoke test packed artifact
+        run: npm run test:package
 
   lint-and-test:
     name: Lint, type-check and test
@@ -101,6 +124,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Install Chromium for replay regression
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser regression
+        run: npm run test:browser
 
   docker-build:
     name: Docker build
