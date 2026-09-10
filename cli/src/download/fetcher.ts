@@ -1,6 +1,7 @@
 import { open, readFile, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { allowedMediaUrl } from "../watch/media.js";
 import type { MediaPlaylist } from "./playlist.js";
 
 export class DownloadError extends Error {
@@ -53,6 +54,25 @@ export function fingerprintPlaylist(playlist: MediaPlaylist): string {
   const first = playlist.segments[0]?.uri ?? "";
   const last = playlist.segments.at(-1)?.uri ?? "";
   return `${playlist.segments.length}|${playlist.initSegment ?? ""}|${first}|${last}`;
+}
+
+/**
+ * Reject playlist entries that do not point at Twitch's media servers, the
+ * same policy the local player proxy applies. The playlist itself comes from a
+ * resolved Twitch URL, but its segment lines are still untrusted input.
+ */
+export function assertAllowedMediaUrl(url: string): void {
+  try {
+    allowedMediaUrl(url);
+  } catch {
+    let host = url;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      /* Keep the raw value in the message. */
+    }
+    throw new DownloadError(`The playlist references a resource outside Twitch's media servers: ${host}`, "BLOCKED_URL");
+  }
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -158,6 +178,7 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
     while (attempt < attempts) {
       signal.throwIfAborted();
       try {
+        assertAllowedMediaUrl(target);
         const timeout = AbortSignal.timeout(timeoutMs);
         const response = await fetchFn(target, { signal: AbortSignal.any([timeout, signal]) });
         if (response.ok) return Buffer.from(await response.arrayBuffer());
@@ -179,9 +200,11 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
         if (error instanceof DownloadError) throw error;
         lastError = error;
       }
-      await delay(Math.min(8000, retryDelayMs * 2 ** attempt) + Math.floor(Math.random() * 50), undefined, {
-        signal,
-      });
+      if (attempt + 1 < attempts) {
+        await delay(Math.min(8000, retryDelayMs * 2 ** attempt) + Math.floor(Math.random() * 50), undefined, {
+          signal,
+        });
+      }
       attempt += 1;
     }
     throw new DownloadError(

@@ -5,7 +5,7 @@ import { stderr, stdout } from "node:process";
 
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, ResolveError, resolveM3U8 } from "../resolver.js";
 import type { ResolveResult } from "../types.js";
-import { DownloadError, downloadPlaylist } from "./fetcher.js";
+import { assertAllowedMediaUrl, DownloadError, downloadPlaylist } from "./fetcher.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
 
 export const DOWNLOAD_HELP = `Download a Twitch VOD as a single file, without ffmpeg by default.
@@ -105,6 +105,7 @@ function parseDownloadArgs(args: string[]): DownloadCliOptions {
 }
 
 async function fetchText(url: string, signal: AbortSignal): Promise<string> {
+  assertAllowedMediaUrl(url);
   const response = await fetch(url, { signal: AbortSignal.any([AbortSignal.timeout(30_000), signal]) });
   if (!response.ok) {
     await response.body?.cancel();
@@ -128,12 +129,13 @@ async function loadMediaPlaylist(url: string, signal: AbortSignal): Promise<Medi
   return parseMediaPlaylist(text, url);
 }
 
-function defaultOutput(result: ResolveResult): string {
+function defaultOutput(result: ResolveResult, mp4: boolean): string {
+  const extension = mp4 ? ".mp4" : ".ts";
   if (result.kind === "hidden") {
     const started = Math.floor(Date.parse(result.startedAt) / 1000);
-    return join("downloads", `${result.channel}_${result.streamId}_${started}.ts`);
+    return join("downloads", `${result.channel}_${result.streamId}_${started}${extension}`);
   }
-  return join("downloads", `${result.videoId}.ts`);
+  return join("downloads", `${result.videoId}${extension}`);
 }
 
 async function remuxToMp4(input: string, output: string): Promise<void> {
@@ -180,6 +182,9 @@ export async function downloadCommand(args: string[]): Promise<void> {
     const started = Date.now();
     const requestedOutput = options.output ? resolve(options.output) : null;
     const remux = options.remux || (requestedOutput?.toLowerCase().endsWith(".mp4") ?? false);
+    if (remux && requestedOutput && !requestedOutput.toLowerCase().endsWith(".mp4")) {
+      throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
+    }
     // Fail before downloading gigabytes when ffmpeg is required but missing.
     if (remux) assertFfmpeg();
     const result = await resolveM3U8(options.target, {
@@ -188,11 +193,8 @@ export async function downloadCommand(args: string[]): Promise<void> {
       ...(options.channel ? { channel: options.channel } : {}),
     });
     const format = chooseFormat(result.formats, options.quality);
-    const requested = requestedOutput ?? resolve(defaultOutput(result));
+    const requested = requestedOutput ?? resolve(defaultOutput(result, remux));
     const tsPath = remux ? requested.replace(/\.mp4$/i, ".ts") : requested;
-    if (remux && tsPath === requested) {
-      throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
-    }
 
     if (stderr.isTTY) {
       stderr.write(`Resolving ${result.kind === "hidden" ? result.canonicalTarget : `VOD ${result.videoId}`} (${format.id})...\n`);

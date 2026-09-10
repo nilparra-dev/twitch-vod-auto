@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,7 +21,7 @@ async function workdir() {
 const exists = (path) => stat(path).then(() => true, () => false);
 
 const playlistWith = (lines) =>
-  parseMediaPlaylist(`#EXTM3U\n#EXT-X-TARGETDURATION:13\n${lines}\n#EXT-X-ENDLIST`, "https://cdn.example/vod/index.m3u8");
+  parseMediaPlaylist(`#EXTM3U\n#EXT-X-TARGETDURATION:13\n${lines}\n#EXT-X-ENDLIST`, "https://d2nvs31859zcd8.cloudfront.net/vod/index.m3u8");
 
 describe("playlist parsing", () => {
   it("parses segments, durations and the init segment", () => {
@@ -34,14 +34,17 @@ describe("playlist parsing", () => {
 #EXTINF:8.951,
 1.ts
 #EXT-X-ENDLIST`,
-      "https://cdn.example/vod/index.m3u8",
+      "https://d2nvs31859zcd8.cloudfront.net/vod/index.m3u8",
     );
     assert.equal(playlist.endList, true);
-    assert.equal(playlist.initSegment, "https://cdn.example/vod/init.mp4");
+    assert.equal(playlist.initSegment, "https://d2nvs31859zcd8.cloudfront.net/vod/init.mp4");
     assert.equal(playlist.totalDurationSeconds, 18.951);
     assert.deepEqual(
       playlist.segments.map((segment) => segment.uri),
-      ["https://cdn.example/vod/0.ts", "https://cdn.example/vod/1.ts"],
+      [
+        "https://d2nvs31859zcd8.cloudfront.net/vod/0.ts",
+        "https://d2nvs31859zcd8.cloudfront.net/vod/1.ts",
+      ],
     );
   });
 
@@ -83,7 +86,7 @@ describe("segment downloader", () => {
 #EXTINF:10,
 a.m4s
 #EXT-X-ENDLIST`,
-      "https://cdn.example/vod/index.m3u8",
+      "https://d2nvs31859zcd8.cloudfront.net/vod/index.m3u8",
     );
     const fakeFetch = async (url) => {
       const key = String(url).split("/").at(-1);
@@ -132,6 +135,24 @@ a.m4s
     };
     await downloadPlaylist({ playlist, output, fetch: fakeFetch, retryDelayMs: 1 });
     assert.equal(await readFile(output, "utf8"), "MUTED");
+  });
+
+  it("refuses segments outside Twitch media servers", async () => {
+    const directory = await workdir();
+    const output = join(directory, "out.ts");
+    const playlist = parseMediaPlaylist(
+      "#EXTM3U\n#EXTINF:10,\nhttps://evil.example/segment.ts\n#EXT-X-ENDLIST",
+      "https://d2nvs31859zcd8.cloudfront.net/vod/index.m3u8",
+    );
+    await assert.rejects(
+      downloadPlaylist({
+        playlist,
+        output,
+        fetch: async () => new Response("X", { status: 200 }),
+        retryDelayMs: 1,
+      }),
+      (error) => error instanceof DownloadError && error.code === "BLOCKED_URL",
+    );
   });
 
   it("resumes a partial download and only fetches the missing segments", async () => {
