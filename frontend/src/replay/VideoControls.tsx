@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   Play,
   Pause,
@@ -38,7 +38,10 @@ export function VideoControls({
   });
   const [fullscreen, setFullscreen] = useState(false);
   const audio = useRef({ volume: 1, muted: false });
-  useEffect(() => {
+  // Volume and mute must survive a <video> remount (new file, new quality).
+  // A layout effect restores them during the commit, before the first frame,
+  // instead of leaving a frame where a new element starts unmuted.
+  useLayoutEffect(() => {
     const element = video.current;
     if (!element) return;
     element.volume = audio.current.volume;
@@ -123,7 +126,10 @@ export function VideoControls({
           event.preventDefault();
           jump(state.time + 10);
         }
-        if (event.key === "m" && video.current) video.current.muted = !video.current.muted;
+        if (event.key === "m" && video.current) {
+          video.current.muted = !video.current.muted;
+          audio.current = { ...audio.current, muted: video.current.muted };
+        }
         if (event.key === "f") toggleFullscreen();
       }}
     >
@@ -191,7 +197,12 @@ export function VideoControls({
             title="Mute (M)"
             disabled={!source}
             onClick={() => {
-              if (video.current) video.current.muted = !video.current.muted;
+              const element = video.current;
+              if (!element) return;
+              element.muted = !element.muted;
+              // Keep the ref authoritative now: volumechange fires later, and a
+              // source change in between would otherwise restore a stale value.
+              audio.current = { ...audio.current, muted: element.muted };
             }}
           >
             {state.muted || state.volume === 0 ? <VolumeX size={19} /> : <Volume2 size={19} />}
@@ -205,9 +216,11 @@ export function VideoControls({
             value={state.muted ? 0 : state.volume}
             disabled={!source}
             onChange={(event) => {
-              if (video.current) {
-                video.current.volume = Number(event.target.value);
-                video.current.muted = false;
+              const element = video.current;
+              if (element) {
+                element.volume = Number(event.target.value);
+                element.muted = false;
+                audio.current = { volume: element.volume, muted: false };
               }
             }}
           />
