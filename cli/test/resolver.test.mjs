@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-import { buildFullVodPath, chooseFormat, parseInput, parseMasterManifest, ResolveError } from "../../dist/resolver.js";
+import { buildFullVodPath, chooseFormat, parseInput, parseMasterManifest, ResolveError, resolveM3U8 } from "../../dist/resolver.js";
 
 describe("CLI metadata", () => {
   it("prints the package version", () => {
@@ -67,5 +67,115 @@ https://video.example/720p60/index-dvr.m3u8`;
     assert.equal(chooseFormat(formats).id, "chunked");
     assert.equal(chooseFormat(formats, "720p60").height, 720);
     assert.throws(() => chooseFormat(formats, "144p"), ResolveError);
+  });
+});
+
+describe("hidden VOD resolution chain", () => {
+  const channel = "somechannel";
+  const streamId = "999999999999";
+
+  const cdnResponse = (status) => new Response("", { status });
+  const isCdn = (url) => url.includes(".cloudfront.net") || url.includes(".twitch.tv") || url.includes("ttvnw.net");
+
+  it("finds a VOD whose Source quality is missing by probing other qualities", async () => {
+    const timestamp = 2000;
+    const domain = "https://d2vi6trrdongqn.cloudfront.net";
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url.startsWith(domain) && url.includes(`_${channel}_${streamId}_${timestamp}/720p60/index-dvr.m3u8`)) {
+        return cdnResponse(200);
+      }
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    const result = await resolveM3U8(`video:${channel}_${streamId}_${timestamp}`, {
+      fetch: fetchImpl,
+      timestampWindow: 0,
+    });
+    assert.equal(result.kind, "hidden");
+    assert.ok(result.formats.some((format) => format.id === "720p60"));
+  });
+
+  it("uses an exact tracker timestamp when the provided one is wrong", async () => {
+    const provided = 1000;
+    const exact = 1093;
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url === `https://twitracker.com/streamers/${channel}/streams/${streamId}`) {
+        return new Response(`<nav><time datetime="${new Date(exact * 1000).toISOString()}">x</time></nav>`, {
+          status: 200,
+        });
+      }
+      if (url.includes(`_${channel}_${streamId}_${exact}/`)) {
+        return cdnResponse(url.includes("/chunked/index-dvr.m3u8") ? 200 : 403);
+      }
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    const result = await resolveM3U8(`video:${channel}_${streamId}_${provided}`, {
+      fetch: fetchImpl,
+      timestampWindow: 0,
+    });
+    assert.equal(result.kind, "hidden");
+    assert.deepEqual(result.timestamp, {
+      requested: provided,
+      used: exact,
+      adjusted: true,
+      source: "twitracker",
+    });
+    assert.equal(result.startedAt, new Date(exact * 1000).toISOString());
+  });
+
+  it("finds the exact second through a bounded timestamp window", async () => {
+    const provided = 2000;
+    const found = 2081;
+    const domain = "https://d1m7jfoe9zdc1j.cloudfront.net";
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url.startsWith(domain) && url.includes(`_${channel}_${streamId}_${found}/chunked/index-dvr.m3u8`)) {
+        return cdnResponse(200);
+      }
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    const result = await resolveM3U8(`video:${channel}_${streamId}_${provided}`, {
+      fetch: fetchImpl,
+      timestampWindow: 90,
+    });
+    assert.equal(result.kind, "hidden");
+    assert.equal(result.timestamp?.used, found);
+    assert.equal(result.timestamp?.source, "window");
+    assert.equal(result.timestamp?.adjusted, true);
+  });
+
+  it("resolves a bare stream ID through the tracker timestamp chain", async () => {
+    const exact = 1093;
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url === `https://twitracker.com/streamers/${channel}/streams/${streamId}`) {
+        return new Response(`<time datetime="${new Date(exact * 1000).toISOString()}">x</time>`, { status: 200 });
+      }
+      if (url.includes(`_${channel}_${streamId}_${exact}/`)) {
+        return cdnResponse(url.includes("/chunked/index-dvr.m3u8") ? 200 : 403);
+      }
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    const result = await resolveM3U8(streamId, { channel, fetch: fetchImpl, timestampWindow: 0 });
+    assert.equal(result.kind, "hidden");
+    assert.equal(result.timestamp?.used, exact);
+    assert.equal(result.timestamp?.source, "twitracker");
+  });
+
+  it("reports a clear error when no timestamp source answers", async () => {
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    await assert.rejects(
+      resolveM3U8(streamId, { channel, fetch: fetchImpl, timestampWindow: 0 }),
+      (error) => error instanceof ResolveError && error.code === "TIMESTAMP_UNAVAILABLE",
+    );
   });
 });

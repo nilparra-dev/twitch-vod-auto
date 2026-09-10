@@ -100,6 +100,8 @@ async def security_middleware(request: Request, call_next):
         "font-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
+        "media-src 'self' blob:; "
+        "worker-src 'self'; "
         "base-uri 'self'; frame-ancestors 'self'; form-action 'self'",
     )
     if COOKIE_SECURE:

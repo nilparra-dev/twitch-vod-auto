@@ -1,17 +1,32 @@
 import { createHash } from "node:crypto";
 
+import { mapWithConcurrency } from "./concurrency.js";
+import { fetchVideoMetadata, GqlClient, TWITCH_WEB_CLIENT_ID } from "./twitch/gql.js";
+import {
+  fetchSullyGnomeStreamTime,
+  fetchStreamerVitalsStreams,
+  fetchTwitTrackerStreamTime,
+  type TrackerOptions,
+  type TrackerStream,
+} from "./twitch/trackers.js";
 import type {
+  HiddenSource,
   ParsedInput,
   PlaylistFormat,
   ResolveOptions,
   ResolveResult,
+  TimestampReport,
+  TimestampSource,
   TrackerProvider,
 } from "./types.js";
 
-const TWITCH_WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const DEFAULT_TIMEOUT_MS = 12_000;
+/** Seconds searched around a provided timestamp when every exact source fails. */
+export const DEFAULT_TIMESTAMP_WINDOW = 120;
+const TRACKER_CLOCK_TOLERANCE_SECONDS = 15 * 60;
+const WINDOW_CONCURRENCY = 24;
 
-const VOD_DOMAINS = [
+export const VOD_DOMAINS = [
   "https://ds0h3roq6wcgc.cloudfront.net",
   "https://d2nvs31859zcd8.cloudfront.net",
   "https://d2aba1wr3818hz.cloudfront.net",
@@ -24,7 +39,15 @@ const VOD_DOMAINS = [
   "https://d3fi1amfgojobc.cloudfront.net",
   "https://d2vi6trrdongqn.cloudfront.net",
   "https://d3stzm2eumvgb4.cloudfront.net",
+  // Verified aliases of the ds0h/d2nv distribution. They only help when a
+  // network can reach twitch.tv but not the CloudFront hostname.
+  "https://vod-secure.twitch.tv",
+  "https://vod-metro.twitch.tv",
+  "https://vod-pop-secure.twitch.tv",
 ] as const;
+
+/** Qualities probed, in order, when looking for a VOD on a distribution. */
+const QUALITY_PROBE_ORDER = ["chunked", "720p60", "480p30", "audio_only"] as const;
 
 const FORMAT_PATHS = [
   { id: "Source", path: "chunked", height: null, fps: null },
@@ -59,10 +82,33 @@ const TRACKER_PATTERNS: ReadonlyArray<{
 ];
 
 export class ResolveError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code: string = "RESOLVE_FAILED",
+  ) {
     super(message);
     this.name = "ResolveError";
   }
+}
+
+interface ProbeContext {
+  timeoutMs: number;
+  fetch: typeof fetch;
+  signal?: AbortSignal;
+}
+
+/** Domains that recently served a channel, most recent first. */
+const domainMemory = new Map<string, string[]>();
+
+function rememberDomain(channel: string, domain: string): void {
+  const key = channel.toLowerCase();
+  const remembered = domainMemory.get(key) ?? [];
+  domainMemory.set(key, [domain, ...remembered.filter((item) => item !== domain)].slice(0, 4));
+}
+
+export function orderedVodDomains(channel?: string): string[] {
+  const remembered = channel ? (domainMemory.get(channel.toLowerCase()) ?? []) : [];
+  return [...new Set([...remembered, ...VOD_DOMAINS])];
 }
 
 export function parseInput(rawInput: string): ParsedInput {
@@ -70,10 +116,10 @@ export function parseInput(rawInput: string): ParsedInput {
   const canonical = input.match(/^video:(?<channel>\w+)_(?<id>\d+)_(?<timestamp>\d+)$/i);
   if (canonical?.groups) {
     const { channel, id, timestamp } = canonical.groups;
-    if (!channel || !id || !timestamp) throw new ResolveError("Incomplete video: target.");
+    if (!channel || !id || !timestamp) throw new ResolveError("Incomplete video: target.", "INVALID_INPUT");
     return {
       kind: "hidden",
-      channel,
+      channel: channel.toLowerCase(),
       streamId: id,
       timestamp: Number.parseInt(timestamp, 10),
       source: "canonical",
@@ -84,7 +130,7 @@ export function parseInput(rawInput: string): ParsedInput {
     const match = input.match(pattern);
     if (match?.groups) {
       const { channel, id } = match.groups;
-      if (!channel || !id) throw new ResolveError("Incomplete tracker URL.");
+      if (!channel || !id) throw new ResolveError("Incomplete tracker URL.", "INVALID_INPUT");
       return {
         kind: "tracker",
         channel: channel.toLowerCase(),
@@ -104,6 +150,7 @@ export function parseInput(rawInput: string): ParsedInput {
 
   throw new ResolveError(
     "Unsupported input. Use a Twitch or tracker URL, an ID, or video:channel_streamId_timestamp.",
+    "INVALID_INPUT",
   );
 }
 
@@ -145,104 +192,104 @@ function getString(record: Record<string, unknown>, key: string): string | null 
   return typeof value === "string" ? value : null;
 }
 
-async function request(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+function createContext(options: ResolveOptions): ProbeContext {
+  const context: ProbeContext = {
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    fetch: options.fetch ?? fetch,
+  };
+  return options.signal ? { ...context, signal: options.signal } : context;
 }
 
-async function urlExists(url: string, timeoutMs: number): Promise<boolean> {
+function trackerOptions(ctx: ProbeContext): TrackerOptions {
+  const options: TrackerOptions = { fetch: ctx.fetch, timeoutMs: ctx.timeoutMs };
+  return ctx.signal ? { ...options, signal: ctx.signal } : options;
+}
+
+async function request(url: string, init: RequestInit, ctx: ProbeContext): Promise<Response> {
+  const timeout = AbortSignal.timeout(ctx.timeoutMs);
+  const signal = ctx.signal ? AbortSignal.any([timeout, ctx.signal]) : timeout;
+  return ctx.fetch(url, { ...init, signal });
+}
+
+/**
+ * Probe one media URL. HEAD is the cheap default; GET with a byte range covers
+ * servers that reject HEAD. A 403 or 404 is a definitive negative: Twitch's
+ * CloudFront returns 403 for paths that are not stored on that distribution.
+ */
+async function urlExists(url: string, ctx: ProbeContext): Promise<boolean> {
   try {
-    const response = await request(url, { method: "HEAD", redirect: "follow" }, timeoutMs);
-    return response.ok;
-  } catch {
+    const response = await request(url, { method: "HEAD", redirect: "follow" }, ctx);
+    if (response.ok) return true;
+    if (response.status !== 405 && response.status !== 501) return false;
+    await response.body?.cancel();
+  } catch (error) {
+    ctx.signal?.throwIfAborted();
+  }
+  try {
+    const response = await request(url, { headers: { Range: "bytes=0-0" }, redirect: "follow" }, ctx);
+    const ok = response.ok;
+    await response.body?.cancel();
+    return ok;
+  } catch (error) {
+    ctx.signal?.throwIfAborted();
     return false;
   }
 }
 
-async function findStreamTimestamp(channel: string, streamId: string, timeoutMs: number): Promise<number> {
-  let response = await request(
-    `https://sullygnome.com/api/standardsearch/${encodeURIComponent(channel)}`,
-    {},
-    timeoutMs,
-  );
-  if (!response.ok) throw new ResolveError(`SullyGnome returned HTTP ${response.status}.`);
-  const search: unknown = await response.json();
-  if (!Array.isArray(search)) throw new ResolveError("SullyGnome returned an unexpected response.");
-
-  const channelItem = search.find(
-    (item) =>
-      isRecord(item) &&
-      item.itemtype === 1 &&
-      getString(item, "siteurl")?.toLowerCase() === channel.toLowerCase(),
-  );
-  if (!isRecord(channelItem) || typeof channelItem.value !== "number") {
-    throw new ResolveError(`Channel "${channel}" was not found on SullyGnome.`);
-  }
-
-  let start = 0;
-  let page = 1;
-  while (true) {
-    const url = `https://sullygnome.com/api/tables/channeltables/streams/365/${channelItem.value}/%20/${page}/1/desc/${start}/100`;
-    response = await request(url, {}, timeoutMs);
-    if (!response.ok) throw new ResolveError(`SullyGnome returned HTTP ${response.status}.`);
-    const payload: unknown = await response.json();
-    if (!isRecord(payload) || !Array.isArray(payload.data)) {
-      throw new ResolveError("SullyGnome returned an unexpected stream history response.");
-    }
-
-    const stream = payload.data.find(
-      (item) => isRecord(item) && String(item.streamId) === streamId,
-    );
-    if (isRecord(stream)) {
-      const startedAt = getString(stream, "startDateTime");
-      if (!startedAt) throw new ResolveError("The stream has no start time.");
-      const timestamp = Math.floor(Date.parse(startedAt) / 1000);
-      if (!Number.isFinite(timestamp) || timestamp <= 0) throw new ResolveError("The stream start time is invalid.");
-      return timestamp;
-    }
-
-    const total = typeof payload.recordsFiltered === "number" ? payload.recordsFiltered : 0;
-    start += 100;
-    page += 1;
-    if (start >= total) break;
-  }
-
-  throw new ResolveError(
-    "The stream was not found in the one-year history. Use video:channel_streamId_timestamp if you know the exact start time.",
-  );
+interface DomainMatch {
+  domain: string;
+  quality: string;
 }
 
-async function resolveHidden(
-  channel: string,
-  streamId: string,
-  timestamp: number,
-  source: TrackerProvider | "canonical" | "stream-id",
-  timeoutMs: number,
-): Promise<ResolveResult> {
-  const fullPath = buildFullVodPath(channel, streamId, timestamp);
-  const domainChecks = await Promise.all(
-    VOD_DOMAINS.map(async (domain) => ({
-      domain,
-      available: await urlExists(`${domain}/${fullPath}/chunked/index-dvr.m3u8`, timeoutMs),
-    })),
-  );
-  const domain = domainChecks.find((item) => item.available)?.domain;
-  if (!domain) {
-    throw new ResolveError(
-      "The VOD was not found on known Twitch CDN domains. It may have expired, been deleted, or have a different start time.",
+/**
+ * Find which distribution stores this path. `chunked` (Source) is checked
+ * first; when it is absent the other representative qualities are probed so a
+ * VOD without the source quality is still discovered.
+ */
+async function findDomain(fullPath: string, channel: string | undefined, ctx: ProbeContext): Promise<DomainMatch | null> {
+  const domains = orderedVodDomains(channel);
+  for (const quality of QUALITY_PROBE_ORDER) {
+    const checks = await Promise.all(
+      domains.map(async (domain) => ({
+        domain,
+        available: await urlExists(`${domain}/${fullPath}/${quality}/index-dvr.m3u8`, ctx),
+      })),
     );
+    const match = checks.find((item) => item.available);
+    if (match) return { domain: match.domain, quality };
   }
+  return null;
+}
 
+async function probeFormats(domain: string, fullPath: string, ctx: ProbeContext): Promise<PlaylistFormat[]> {
   const checks = await Promise.all(
     FORMAT_PATHS.map(async (format): Promise<PlaylistFormat | null> => {
       const url = `${domain}/${fullPath}/${format.path}/index-dvr.m3u8`;
-      return (await urlExists(url, timeoutMs))
+      return (await urlExists(url, ctx))
         ? { id: format.id, url, height: format.height, fps: format.fps }
         : null;
     }),
   );
-  const formats = checks.filter((format): format is PlaylistFormat => format !== null);
-  if (formats.length === 0) throw new ResolveError("The VOD path exists, but no playable quality was found.");
+  return checks.filter((format): format is PlaylistFormat => format !== null);
+}
 
+async function resolveAtTimestamp(
+  channel: string,
+  streamId: string,
+  timestamp: number,
+  source: HiddenSource,
+  report: TimestampReport,
+  ctx: ProbeContext,
+): Promise<ResolveResult | null> {
+  if (!Number.isInteger(timestamp) || timestamp <= 0) return null;
+  const fullPath = buildFullVodPath(channel, streamId, timestamp);
+  const match = await findDomain(fullPath, channel, ctx);
+  if (!match) return null;
+  rememberDomain(channel, match.domain);
+  const formats = await probeFormats(match.domain, fullPath, ctx);
+  if (formats.length === 0) {
+    throw new ResolveError("The VOD path exists, but no playable quality was found.", "NOT_FOUND");
+  }
   return {
     kind: "hidden",
     source,
@@ -251,10 +298,160 @@ async function resolveHidden(
     startedAt: new Date(timestamp * 1000).toISOString(),
     canonicalTarget: `video:${channel}_${streamId}_${timestamp}`,
     formats,
+    timestamp: report,
   };
 }
 
-async function resolvePublic(videoId: string, timeoutMs: number): Promise<ResolveResult> {
+/**
+ * Last resort when no exact timestamp is available: enumerate the seconds
+ * around an approximate timestamp, closest first, across the known
+ * distributions. Only the Source quality is checked, and the search stops at
+ * the first hit.
+ */
+async function searchTimestampWindow(
+  channel: string,
+  streamId: string,
+  anchor: number,
+  windowSeconds: number,
+  ctx: ProbeContext,
+): Promise<{ seconds: number; domain: string } | null> {
+  const domains = orderedVodDomains(channel);
+  const deltas: number[] = [0];
+  for (let step = 1; step <= windowSeconds; step += 1) deltas.push(step, -step);
+  const pairs: Array<{ delta: number; domain: string }> = [];
+  for (const delta of deltas) {
+    for (const domain of domains) pairs.push({ delta, domain });
+  }
+  let hit: { seconds: number; domain: string } | null = null;
+  await mapWithConcurrency(pairs, WINDOW_CONCURRENCY, async ({ delta, domain }) => {
+    if (hit !== null || ctx.signal?.aborted) return;
+    const seconds = anchor + delta;
+    if (seconds <= 0) return;
+    const fullPath = buildFullVodPath(channel, streamId, seconds);
+    if (await urlExists(`${domain}/${fullPath}/chunked/index-dvr.m3u8`, ctx)) {
+      if (hit === null) hit = { seconds, domain };
+    }
+  });
+  return hit;
+}
+
+function nearestStream(streams: TrackerStream[], anchor: number, toleranceSeconds: number): TrackerStream | null {
+  let best: TrackerStream | null = null;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const stream of streams) {
+    const diff = Math.abs(stream.startedAt - anchor);
+    if (diff <= toleranceSeconds && diff < bestDiff) {
+      best = stream;
+      bestDiff = diff;
+    }
+  }
+  return best;
+}
+
+interface HiddenTarget {
+  channel: string;
+  streamId: string;
+  provided?: number;
+  source: HiddenSource;
+  options: ResolveOptions;
+  ctx: ProbeContext;
+}
+
+async function resolveHiddenTarget(target: HiddenTarget): Promise<ResolveResult> {
+  const { channel, streamId, provided, source, options, ctx } = target;
+  const requested = provided ?? null;
+
+  // 1. The timestamp supplied by the caller is the cheapest thing to try.
+  if (provided !== undefined) {
+    const result = await resolveAtTimestamp(
+      channel,
+      streamId,
+      provided,
+      source,
+      { requested, used: provided, adjusted: false, source: "provided" },
+      ctx,
+    );
+    if (result) return result;
+  }
+
+  // 2. Exact tracker timestamps: twitracker and SullyGnome expose seconds.
+  // allSettled keeps a successful source even when the other one fails.
+  const exactResults = await Promise.allSettled([
+    fetchTwitTrackerStreamTime(channel, streamId, trackerOptions(ctx)),
+    fetchSullyGnomeStreamTime(channel, streamId, trackerOptions(ctx)),
+  ]);
+  ctx.signal?.throwIfAborted();
+  const twitTracker = exactResults[0].status === "fulfilled" ? exactResults[0].value : null;
+  const sullyGnome = exactResults[1].status === "fulfilled" ? exactResults[1].value : null;
+
+  const candidates: Array<{ seconds: number; source: TimestampSource }> = [];
+  if (twitTracker !== null) candidates.push({ seconds: twitTracker, source: "twitracker" });
+  if (sullyGnome !== null) candidates.push({ seconds: sullyGnome, source: "sullygnome" });
+  for (const candidate of candidates) {
+    if (candidate.seconds === provided) continue;
+    const result = await resolveAtTimestamp(
+      channel,
+      streamId,
+      candidate.seconds,
+      source,
+      { requested, used: candidate.seconds, adjusted: provided !== undefined, source: candidate.source },
+      ctx,
+    );
+    if (result) return result;
+  }
+
+  if (provided !== undefined) {
+    // 3. Match the nearest stream on a tracker list. Those pages expose the
+    // exact start second and cover channels Twitch does not archive publicly.
+    const streams = await fetchStreamerVitalsStreams(channel, trackerOptions(ctx)).catch(() => [] as TrackerStream[]);
+    ctx.signal?.throwIfAborted();
+    const nearest = nearestStream(streams, provided, TRACKER_CLOCK_TOLERANCE_SECONDS);
+    if (nearest && nearest.startedAt !== provided) {
+      const result = await resolveAtTimestamp(
+        channel,
+        streamId,
+        nearest.startedAt,
+        source,
+        { requested, used: nearest.startedAt, adjusted: true, source: "streamervitals" },
+        ctx,
+      );
+      if (result) return result;
+    }
+
+    // 4. Bounded second-by-second search around the approximate timestamp.
+    const window = options.timestampWindow ?? DEFAULT_TIMESTAMP_WINDOW;
+    if (window > 0) {
+      const found = await searchTimestampWindow(channel, streamId, provided, window, ctx);
+      if (found) {
+        const result = await resolveAtTimestamp(
+          channel,
+          streamId,
+          found.seconds,
+          source,
+          { requested, used: found.seconds, adjusted: true, source: "window" },
+          ctx,
+        );
+        if (result) return result;
+      }
+    }
+  }
+
+  if (provided === undefined) {
+    throw new ResolveError(
+      `Could not determine the start time of ${channel}/${streamId}. Tracker lookups failed or are blocked; ` +
+        `use "video:${channel}_${streamId}_<start-epoch-seconds>".`,
+      "TIMESTAMP_UNAVAILABLE",
+    );
+  }
+  const window = options.timestampWindow ?? DEFAULT_TIMESTAMP_WINDOW;
+  throw new ResolveError(
+    `The VOD was not found on any known Twitch distribution, even after checking exact tracker timestamps` +
+      `${window > 0 ? ` and a ±${window}s window` : ""}. It may have been deleted, expired, or its media was never stored.`,
+    "NOT_FOUND",
+  );
+}
+
+async function resolvePublicManifest(videoId: string, ctx: ProbeContext): Promise<ResolveResult> {
   const query = `query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!, $platform: String!) { streamPlaybackAccessToken(channelName: $login, params: {platform: $platform, playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) { value signature } videoPlaybackAccessToken(id: $vodID, params: {platform: $platform, playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) { value signature } }`;
   const tokenResponse = await request(
     "https://gql.twitch.tv/gql",
@@ -267,18 +464,18 @@ async function resolvePublic(videoId: string, timeoutMs: number): Promise<Resolv
         variables: { isLive: false, login: "", isVod: true, vodID: videoId, playerType: "site", platform: "web" },
       }),
     },
-    timeoutMs,
+    ctx,
   );
-  if (!tokenResponse.ok) throw new ResolveError(`Twitch returned HTTP ${tokenResponse.status}.`);
+  if (!tokenResponse.ok) throw new ResolveError(`Twitch returned HTTP ${tokenResponse.status}.`, "HTTP_ERROR");
   const tokenPayload: unknown = await tokenResponse.json();
   if (!isRecord(tokenPayload) || !isRecord(tokenPayload.data)) {
-    throw new ResolveError("Twitch did not return a playback token.");
+    throw new ResolveError("Twitch did not return a playback token.", "NOT_FOUND");
   }
   const token = tokenPayload.data.videoPlaybackAccessToken;
-  if (!isRecord(token)) throw new ResolveError("Twitch did not grant playback access to this VOD.");
+  if (!isRecord(token)) throw new ResolveError("Twitch did not grant playback access to this VOD.", "ACCESS_DENIED");
   const signature = getString(token, "signature");
   const value = getString(token, "value");
-  if (!signature || !value) throw new ResolveError("The playback token is incomplete.");
+  if (!signature || !value) throw new ResolveError("The playback token is incomplete.", "NOT_FOUND");
 
   const params = new URLSearchParams({
     allow_source: "true",
@@ -292,34 +489,80 @@ async function resolvePublic(videoId: string, timeoutMs: number): Promise<Resolv
     token: value,
   });
   const masterUrl = `https://usher.ttvnw.net/vod/${videoId}.m3u8?${params}`;
-  const manifestResponse = await request(masterUrl, {}, timeoutMs);
-  if (!manifestResponse.ok) throw new ResolveError(`The manifest returned HTTP ${manifestResponse.status}.`);
+  const manifestResponse = await request(masterUrl, {}, ctx);
+  if (!manifestResponse.ok) throw new ResolveError(`The manifest returned HTTP ${manifestResponse.status}.`, "HTTP_ERROR");
   const formats = parseMasterManifest(await manifestResponse.text());
-  if (formats.length === 0) throw new ResolveError("The manifest contains no playable qualities.");
+  if (formats.length === 0) throw new ResolveError("The manifest contains no playable qualities.", "NOT_FOUND");
   return { kind: "public", source: "twitch", videoId, masterUrl, formats };
+}
+
+/**
+ * Playback token denied? Restricted VODs may still expose metadata with the
+ * exact hidden path. Probe that path without requiring authentication.
+ */
+async function resolveFromVodMetadata(videoId: string, ctx: ProbeContext): Promise<ResolveResult | null> {
+  const client = new GqlClient({
+    fetch: ctx.fetch,
+    timeoutMs: ctx.timeoutMs,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  });
+  const video = await fetchVideoMetadata(client, videoId);
+  if (!video?.channel || !video.streamId || video.startedAtSeconds === null) return null;
+  const result = await resolveAtTimestamp(
+    video.channel,
+    video.streamId,
+    video.startedAtSeconds,
+    "vod-id",
+    { requested: video.startedAtSeconds, used: video.startedAtSeconds, adjusted: false, source: "provided" },
+    ctx,
+  );
+  if (result?.kind !== "hidden") return null;
+  return { ...result, vodId: videoId };
+}
+
+async function resolvePublic(videoId: string, ctx: ProbeContext): Promise<ResolveResult> {
+  try {
+    return await resolvePublicManifest(videoId, ctx);
+  } catch (error) {
+    ctx.signal?.throwIfAborted();
+    const fallback = await resolveFromVodMetadata(videoId, ctx).catch(() => null);
+    if (fallback) return fallback;
+    throw error;
+  }
 }
 
 export async function resolveM3U8(rawInput: string, options: ResolveOptions = {}): Promise<ResolveResult> {
   const input = parseInput(rawInput);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const ctx = createContext(options);
   switch (input.kind) {
     case "public":
-      return resolvePublic(input.videoId, timeoutMs);
+      return resolvePublic(input.videoId, ctx);
     case "hidden":
-      return resolveHidden(input.channel, input.streamId, input.timestamp, input.source, timeoutMs);
-    case "tracker": {
-      const timestamp = await findStreamTimestamp(input.channel, input.streamId, timeoutMs);
-      return resolveHidden(input.channel, input.streamId, timestamp, input.provider, timeoutMs);
-    }
+      return resolveHiddenTarget({
+        channel: input.channel,
+        streamId: input.streamId,
+        provided: input.timestamp,
+        source: input.source,
+        options,
+        ctx,
+      });
+    case "tracker":
+      return resolveHiddenTarget({
+        channel: input.channel,
+        streamId: input.streamId,
+        source: input.provider,
+        options,
+        ctx,
+      });
     case "stream-id": {
       const channel = options.channel?.trim().toLowerCase();
       if (!channel) {
         throw new ResolveError(
           "A hidden stream ID needs its channel. Add --channel CHANNEL or paste a tracker URL.",
+          "CHANNEL_REQUIRED",
         );
       }
-      const timestamp = await findStreamTimestamp(channel, input.streamId, timeoutMs);
-      return resolveHidden(channel, input.streamId, timestamp, "stream-id", timeoutMs);
+      return resolveHiddenTarget({ channel, streamId: input.streamId, source: "stream-id", options, ctx });
     }
     default: {
       const exhaustive: never = input;
@@ -337,6 +580,7 @@ export function chooseFormat(formats: PlaylistFormat[], requested = "best"): Pla
   if (!selected) {
     throw new ResolveError(
       `Quality "${requested}" is unavailable. Available options: ${formats.map((format) => format.id).join(", ")}.`,
+      "QUALITY_UNAVAILABLE",
     );
   }
   return selected;

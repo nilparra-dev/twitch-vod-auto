@@ -41,6 +41,14 @@ class DashboardRoutingTests(unittest.TestCase):
         self.assertNotIn(b'"openapi"', res.content)
         self.assertNotIn(b'"paths"', res.content)
 
+    def test_local_replay_csp_allows_local_media_and_bundled_worker(self):
+        res = self.client.get("/replay.html")
+        policy = res.headers["content-security-policy"]
+        self.assertIn("media-src 'self' blob:", policy)
+        self.assertIn("worker-src 'self'", policy)
+        self.assertIn("connect-src 'self'", policy)
+        self.assertIn("script-src 'self'", policy)
+
 
 class LoginRateLimitTests(unittest.TestCase):
     def setUp(self):

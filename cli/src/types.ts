@@ -13,6 +13,20 @@ export interface PlaylistFormat {
   fps: number | null;
 }
 
+export type TimestampSource = "provided" | "twitracker" | "streamervitals" | "sullygnome" | "window";
+
+export interface TimestampReport {
+  /** Timestamp supplied by the caller, when there was one. */
+  requested: number | null;
+  /** Timestamp that actually resolved the media path. */
+  used: number;
+  /** True when the resolved timestamp differs from the requested one. */
+  adjusted: boolean;
+  source: TimestampSource;
+}
+
+export type HiddenSource = TrackerProvider | "canonical" | "stream-id" | "vod-id";
+
 export type ResolveResult =
   | {
       kind: "public";
@@ -23,15 +37,21 @@ export type ResolveResult =
     }
   | {
       kind: "hidden";
-      source: TrackerProvider | "canonical" | "stream-id";
+      source: HiddenSource;
       channel: string;
       streamId: string;
       startedAt: string;
       canonicalTarget: string;
       formats: PlaylistFormat[];
+      vodId?: string | null;
+      timestamp?: TimestampReport;
     };
 
 export interface ResolveOptions {
   channel?: string;
   timeoutMs?: number;
+  /** Seconds searched around a provided timestamp when exact sources fail. */
+  timestampWindow?: number;
+  signal?: AbortSignal;
+  fetch?: typeof fetch;
 }
