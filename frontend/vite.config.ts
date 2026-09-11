@@ -12,6 +12,15 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // The persisted chat contract is shared with the CLI and must stay a
+      // dependency-free module. The alias keeps the boundary explicit.
+      "@chat-protocol": fileURLToPath(new URL("../cli/src/protocol.ts", import.meta.url)),
+    },
+  },
+  server: {
+    fs: {
+      // Allow the dev server to read the shared contract outside frontend/.
+      allow: [fileURLToPath(new URL("..", import.meta.url))],
     },
   },
   build: {

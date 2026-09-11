@@ -4,9 +4,9 @@ import {
   record,
   string,
   type ChatMessage,
-} from "../../../cli/src/chat/model";
+} from "@chat-protocol";
 
-export type { ChatMessage } from "../../../cli/src/chat/model";
+export type { ChatMessage } from "@chat-protocol";
 export interface ReplayFile {
   size: number;
   slice(start?: number, end?: number): Pick<Blob, "arrayBuffer">;
