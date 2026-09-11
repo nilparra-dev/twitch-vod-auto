@@ -488,7 +488,9 @@ async function resolvePublicManifest(videoId: string, ctx: ProbeContext): Promis
     token: value,
   });
   const masterUrl = `https://usher.ttvnw.net/vod/${videoId}.m3u8?${params}`;
-  const manifestResponse = await request(masterUrl, {}, ctx);
+  // The manifest request uses the media allowlist too: a redirect must not
+  // leave Twitch's media hosts.
+  const manifestResponse = await mediaProbe(masterUrl, {}, ctx);
   if (!manifestResponse.ok) throw new ResolveError(`The manifest returned HTTP ${manifestResponse.status}.`, "HTTP_ERROR");
   const formats = parseMasterManifest(await manifestResponse.text());
   if (formats.length === 0) throw new ResolveError("The manifest contains no playable qualities.", "NOT_FOUND");

@@ -102,6 +102,32 @@ https://video-weaver.test.ttvnw.net/123/720p60/index-dvr.m3u8`;
     assert.match(requests[1], /[?&]sig=sig(&|$)/);
     assert.match(requests[1], /[?&]token=token(&|$)/);
   });
+  it("rejects a manifest redirect outside the media allowlist", async () => {
+    const requested = [];
+    const fetchImpl = async (input, init) => {
+      const url = String(input);
+      requested.push(url);
+      if (url === "https://gql.twitch.tv/gql") {
+        const body = JSON.parse(init.body);
+        if (body.operationName === "PlaybackAccessToken_Template") {
+          return new Response(
+            JSON.stringify({ data: { videoPlaybackAccessToken: { value: "token", signature: "sig" } } }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ data: { video: null } }), { status: 200 });
+      }
+      if (url.startsWith("https://usher.ttvnw.net/vod/2434567890.m3u8")) {
+        return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private" } });
+      }
+      return new Response("", { status: 404 });
+    };
+    await assert.rejects(
+      resolveM3U8("https://www.twitch.tv/videos/2434567890", { fetch: fetchImpl }),
+      /outside Twitch/,
+    );
+    assert.equal(requested.some((url) => url.includes("127.0.0.1")), false);
+  });
 });
 
 describe("hidden VOD resolution chain", () => {

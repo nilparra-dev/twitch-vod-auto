@@ -1,7 +1,6 @@
-import { setTimeout as delay } from "node:timers/promises";
+import { GqlQueryError, queryTwitchGql } from "./query.js";
 
-export const TWITCH_GQL_URL = "https://gql.twitch.tv/gql";
-export const TWITCH_WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+export { TWITCH_GQL_URL, TWITCH_WEB_CLIENT_ID } from "./query.js";
 
 const VIDEO_FIELDS =
   "id title createdAt lengthSeconds status viewCount game { name } owner { login } seekPreviewsURL";
@@ -49,51 +48,23 @@ export interface GqlClientOptions {
   retryDelayMs?: number;
 }
 
-/** Minimal Twitch GraphQL client with backoff and Retry-After support. */
+/** Minimal Twitch GraphQL client. The transport and retry policy are shared. */
 export class GqlClient {
   constructor(private readonly options: GqlClientOptions = {}) {}
 
   async query(body: unknown): Promise<Record<string, unknown>> {
-    const attempts = this.options.attempts ?? 4;
-    let lastError: unknown;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      this.options.signal?.throwIfAborted();
-      let waitMs = (this.options.retryDelayMs ?? 500) * 2 ** attempt;
-      try {
-        const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 15_000);
-        const signal = this.options.signal ? AbortSignal.any([timeout, this.options.signal]) : timeout;
-        const response = await (this.options.fetch ?? fetch)(TWITCH_GQL_URL, {
-          method: "POST",
-          headers: { "Client-ID": TWITCH_WEB_CLIENT_ID, "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal,
-        });
-        if (!response.ok) {
-          await response.body?.cancel();
-          if (response.status !== 429 && response.status < 500) {
-            throw new GqlError("HTTP_ERROR", `Twitch returned HTTP ${response.status}.`);
-          }
-          const retryAfter = response.headers.get("retry-after");
-          if (retryAfter) {
-            const seconds = Number(retryAfter);
-            const requested = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
-            if (Number.isFinite(requested)) waitMs = Math.max(waitMs, Math.min(60_000, requested));
-          }
-          throw new Error(`Twitch returned HTTP ${response.status}.`);
-        }
-        const payload = record(await response.json());
-        if (Array.isArray(payload.errors) && payload.errors.length > 0) {
-          throw new GqlError("GRAPHQL_ERROR", "Twitch rejected the GraphQL request. Its internal API may have changed.");
-        }
-        return record(payload.data);
-      } catch (error) {
-        this.options.signal?.throwIfAborted();
-        if (error instanceof GqlError) throw error;
-        lastError = error;
-      }
-      if (attempt + 1 < attempts) await delay(waitMs, undefined, { signal: this.options.signal });
+    try {
+      return await queryTwitchGql(body, {
+        ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+        ...(this.options.signal ? { signal: this.options.signal } : {}),
+        ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+        ...(this.options.attempts !== undefined ? { attempts: this.options.attempts } : {}),
+        ...(this.options.retryDelayMs !== undefined ? { retryDelayMs: this.options.retryDelayMs } : {}),
+      });
+    } catch (error) {
+      if (error instanceof GqlQueryError) throw new GqlError(error.code, error.message);
+      throw error;
     }
-    throw new GqlError("NETWORK_ERROR", lastError instanceof Error ? lastError.message : "Twitch request failed.");
   }
 }
 

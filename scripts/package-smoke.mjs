@@ -74,6 +74,12 @@ async function main() {
     for (const file of expectedFiles) {
       if (!published.has(file)) throw new Error(`${file} is missing from the tarball.`);
     }
+    const publishedMaps = info.files
+      .map((entry) => entry.path)
+      .filter((path) => path.endsWith(".map"));
+    if (publishedMaps.length > 0) {
+      throw new Error(`Source maps must not be published: ${publishedMaps.join(", ")}`);
+    }
 
     // Every local asset referenced by the built page must ship in the tarball.
     const playerHtml = await readFile(join(root, "dist", "player", "replay.html"), "utf8");
