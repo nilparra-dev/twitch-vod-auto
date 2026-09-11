@@ -106,33 +106,52 @@ export function VideoControls({
       : container?.requestFullscreen?.();
     void action?.catch(() => onError("Fullscreen is unavailable in this browser window."));
   }
+  function handleKey(event: KeyboardEvent) {
+    if (event.key === "k") {
+      event.preventDefault();
+      toggle();
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      jump(state.time - 10);
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      jump(state.time + 10);
+    }
+    if (event.key === "m" && video.current) {
+      video.current.muted = !video.current.muted;
+      audio.current = { ...audio.current, muted: video.current.muted };
+    }
+    if (event.key === "f") toggleFullscreen();
+  }
+  // Keep the latest handler in a ref so the window listener is installed once
+  // but always sees the current playback state.
+  const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    keyHandler.current = handleKey;
+  });
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLSelectElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable) ||
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      )
+        return;
+      keyHandler.current(event);
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
   return (
-    <div
-      className="vod-controls"
-      role="group"
-      aria-label="Video controls"
-      onKeyDown={(event) => {
-        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement)
-          return;
-        if (event.key === "k") {
-          event.preventDefault();
-          toggle();
-        }
-        if (event.key === "ArrowLeft") {
-          event.preventDefault();
-          jump(state.time - 10);
-        }
-        if (event.key === "ArrowRight") {
-          event.preventDefault();
-          jump(state.time + 10);
-        }
-        if (event.key === "m" && video.current) {
-          video.current.muted = !video.current.muted;
-          audio.current = { ...audio.current, muted: video.current.muted };
-        }
-        if (event.key === "f") toggleFullscreen();
-      }}
-    >
+    <div className="vod-controls" role="group" aria-label="Video controls">
       <div className="vod-scrubber">
         <div
           className="vod-buffer"

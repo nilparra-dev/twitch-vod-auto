@@ -3,7 +3,7 @@
 // published files, the CLI entry point and the public API.
 //
 // Run `npm run build:package` first so dist/ contains the bundled player.
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,15 +36,20 @@ function runNpm(args, options = {}) {
   if (cli && existsSync(cli)) {
     return execFileSync(process.execPath, [cli, ...args], { encoding: "utf8", ...options });
   }
-  if (process.platform !== "win32") {
-    return execFileSync("npm", args, { encoding: "utf8", ...options });
+  // Fallback for direct invocations: let the shell resolve npm/npm.cmd instead
+  // of building a quoted command line by hand.
+  const result = spawnSync("npm", args, {
+    encoding: "utf8",
+    shell: process.platform === "win32",
+    ...options,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `npm ${args[0]} failed with code ${result.status}: ${(result.stderr ?? "").trim()}`,
+    );
   }
-  // Node 22 refuses to spawn .cmd files without a shell. Leave the command name
-  // unquoted: quoting it breaks the npm cmd shim on some installations.
-  const line = ["npm", ...args]
-    .map((argument) => `"${argument.replaceAll('"', '\\"')}"`)
-    .join(" ");
-  return execSync(line, { encoding: "utf8", ...options });
+  return result.stdout;
 }
 
 async function main() {
@@ -68,6 +73,18 @@ async function main() {
     const published = new Set(info.files.map((entry) => entry.path));
     for (const file of expectedFiles) {
       if (!published.has(file)) throw new Error(`${file} is missing from the tarball.`);
+    }
+
+    // Every local asset referenced by the built page must ship in the tarball.
+    const playerHtml = await readFile(join(root, "dist", "player", "replay.html"), "utf8");
+    const referenced = [...playerHtml.matchAll(/(?:src|href)="\.\/([^"]+)"/g)]
+      .map((match) => match[1])
+      .filter((value) => Boolean(value) && !/^https?:/i.test(value));
+    for (const asset of referenced) {
+      const file = `dist/player/${asset}`;
+      if (!published.has(file)) {
+        throw new Error(`${file} is referenced by replay.html but missing from the tarball.`);
+      }
     }
 
     const consumer = join(temporary, "consumer");

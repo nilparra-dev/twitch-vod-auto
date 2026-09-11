@@ -1,70 +1,38 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-*.egg-info/
-build/
-dist/
-.venv/
-venv/
-
-# Node.js CLI
+# Node.js
 node_modules/
 dist/
+*.tsbuildinfo
 
-# Credentials and sensitive data
-client_secret*.json
-youtube_credentials.pkl
-twitch_cookies.txt
-*.cookie
+# Environment
 .env
-config.prod.local.json
-config.local.json
+.env.*
+!.env.example
 
-# Logs and process data
+# Logs
 logs/
-processed.json
 *.log
+npm-debug.log*
 
-# Downloads
+# Downloads and local media
 downloads/
+data/
 *.mp4
-*.ts
+*.mkv
+*.webm
+*.m3u8
 *.part
+*.part-*
+*.tmp
 *.ytdl
 *.jpg
-# The *.ts pattern above covers Twitch video segments. Keep TypeScript source
-# files in the frontend and CLI.
-!frontend/**/*.ts
-!cli/**/*.ts
 
-# Temporary files
-ffmpeg_temp/
-ffmpeg.zip
-bin/
+# Credentials
+client_secret*.json
 
-# Database and certificates stored in local volumes
-data/
-certbot-data/
-certbot-www/
-secrets/
-
-# IDEs
+# Editor and OS files
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Operating system files
 .DS_Store
 Thumbs.db
-
-# Git
-.git/
-.superpowers/

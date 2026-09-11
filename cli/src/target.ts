@@ -149,16 +149,33 @@ async function targetFromStreamId(
 
 async function targetFromChannel(options: TargetOptions, channel: string): Promise<void> {
   const client = new GqlClient({});
+  const warnings: string[] = [];
+  const recordFailure = (source: string, error: unknown) => {
+    warnings.push(`${source}: ${error instanceof Error ? error.message : String(error)}`);
+  };
   const [videos, twitTracker, streamerVitals] = await Promise.all([
-    fetchChannelVideos(client, channel, { limit: 5 }).catch(() => [] as ChannelVideoNode[]),
-    fetchTwitTrackerStreams(channel).catch(() => [] as TrackerStream[]),
-    fetchStreamerVitalsStreams(channel).catch(() => [] as TrackerStream[]),
+    fetchChannelVideos(client, channel, { limit: 5 }).catch((error: unknown) => {
+      recordFailure("Twitch archive", error);
+      return [] as ChannelVideoNode[];
+    }),
+    fetchTwitTrackerStreams(channel).catch((error: unknown) => {
+      recordFailure("TwitchTracker", error);
+      return [] as TrackerStream[];
+    }),
+    fetchStreamerVitalsStreams(channel).catch((error: unknown) => {
+      recordFailure("StreamerVitals", error);
+      return [] as TrackerStream[];
+    }),
   ]);
+  if (warnings.length > 0 && !options.json) {
+    for (const warning of warnings) stderr.write(`Warning: ${warning}\n`);
+  }
   const merged = mergeChannelStreams({ videos, twitTracker, streamerVitals });
   const latest = latestTarget(channel, merged);
   if (!latest) {
     throw new ResolveError(
-      `No stream with a resolvable target was found for "${channel}". Twitch returned no public archive and the tracker sources returned nothing.`,
+      `No stream with a resolvable target was found for "${channel}". Twitch returned no public archive and the tracker sources returned nothing.` +
+        (warnings.length > 0 ? ` Source errors: ${warnings.join("; ")}.` : ""),
       "NOT_FOUND",
     );
   }
@@ -175,6 +192,7 @@ async function targetFromChannel(options: TargetOptions, channel: string): Promi
       title: stream.title,
       sources: stream.sources,
       target,
+      warnings,
     },
     target,
   );

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { stderr, stdout } from "node:process";
 
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, ResolveError, resolveM3U8 } from "../resolver.js";
+import { fetchMedia } from "../net/media.js";
 import type { ResolveResult } from "../types.js";
 import { assertAllowedMediaUrl, DownloadError, downloadPlaylist } from "./fetcher.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
@@ -106,7 +107,18 @@ function parseDownloadArgs(args: string[]): DownloadCliOptions {
 
 async function fetchText(url: string, signal: AbortSignal): Promise<string> {
   assertAllowedMediaUrl(url);
-  const response = await fetch(url, { signal: AbortSignal.any([AbortSignal.timeout(30_000), signal]) });
+  let response: Response;
+  try {
+    // fetchMedia revalidates every redirect hop against the media allowlist.
+    response = await fetchMedia(url, {
+      signal: AbortSignal.any([AbortSignal.timeout(30_000), signal]),
+    });
+  } catch (error) {
+    throw new ResolveError(
+      error instanceof Error ? error.message : "The playlist request failed.",
+      "HTTP_ERROR",
+    );
+  }
   if (!response.ok) {
     await response.body?.cancel();
     throw new ResolveError(`The playlist returned HTTP ${response.status}.`, "HTTP_ERROR");

@@ -65,17 +65,25 @@ export function usePlayerBridge(): { bridge?: PlayerBridge; error: string | null
     if (!active) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    let delay = 1000;
     const poll = async () => {
+      let ok = false;
       try {
         const response = await fetch(`${api}session`, { signal: controller.signal });
         if (!response.ok) throw new Error("The local player stopped. Restart twitch-m3u8 watch.");
         setSession(parseSession(await response.json()));
         setError(null);
+        ok = true;
       } catch (error) {
         if (!controller.signal.aborted)
           setError(error instanceof Error ? error.message : "Local player is unavailable.");
       }
-      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 1000);
+      if (!controller.signal.aborted) {
+        // Back off while the local server is unreachable instead of hammering
+        // it. The first retry uses the base delay, then each failure doubles it.
+        timer = setTimeout(() => void poll(), ok ? 1000 : delay);
+        delay = ok ? 1000 : Math.min(delay * 2, 30_000);
+      }
     };
     void poll();
     return () => {
@@ -93,6 +101,7 @@ export function usePlayerBridge(): { bridge?: PlayerBridge; error: string | null
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ input, ...(channel ? { channel } : {}) }),
+          signal: AbortSignal.timeout(15_000),
         });
         if (!response.ok)
           throw new Error("Could not start the VOD. Check that the local server is running.");

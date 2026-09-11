@@ -144,13 +144,17 @@ describe("channel stream merge", () => {
 
   it("measures the exact media duration from an HLS playlist", async () => {
     const playlist = "#EXTM3U\n#EXTINF:10,\n0.ts\n#EXTINF:10,\n1.ts\n#EXTINF:8.951,\n2.ts\n#EXT-X-ENDLIST";
-    const duration = await measurePlaylistDuration("https://media.example/index-dvr.m3u8", {
+    const duration = await measurePlaylistDuration("https://d2nvs31859zcd8.cloudfront.net/vod/index-dvr.m3u8", {
       fetch: async () => new Response(playlist, { status: 200 }),
     });
     assert.ok(duration !== null && Math.abs(duration - 28.951) < 1e-9);
-    const missing = await measurePlaylistDuration("https://media.example/nope.m3u8", {
+    const missing = await measurePlaylistDuration("https://d2nvs31859zcd8.cloudfront.net/nope.m3u8", {
       fetch: async () => new Response("", { status: 403 }),
     });
     assert.equal(missing, null);
+    const foreign = await measurePlaylistDuration("https://media.example/index-dvr.m3u8", {
+      fetch: async () => new Response(playlist, { status: 200 }),
+    });
+    assert.equal(foreign, null);
   });
 });

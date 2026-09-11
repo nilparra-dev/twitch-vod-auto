@@ -123,7 +123,9 @@ local player for that stream. The hidden target is computed automatically from
 the exact stream ID and start second, so no manual timestamp is needed. `--all`
 walks every public archive page. `--probe` checks media availability, reports
 the serving domain and measures the exact media duration from the playlist;
-without `--probe`, durations are tracker estimates.
+without `--probe`, durations are tracker estimates. If a tracker or the Twitch
+archive fails, the command prints the source error as a warning instead of
+silently reporting "no streams".
 
 Options:
 
@@ -212,7 +214,9 @@ download keeps a `.part` file and resumes when you run the same command again.
 Output defaults to `downloads/<id>.ts`; existing files and partial downloads
 are never overwritten without `--force`. `-o file.mp4` or `--remux` converts to
 MP4 with ffmpeg (`-c copy`, no re-encode); without ffmpeg the `.ts` file plays
-in VLC, MPV and most editors.
+in VLC, MPV and most editors. Every segment URL and redirect must stay on
+Twitch's media domains, and an oversized segment aborts instead of filling the
+disk.
 
 ## Chat archiving
 
@@ -260,12 +264,11 @@ final journal line is discarded on recovery; corrupt committed pages cause an
 error. Messages are streamed by page, while message IDs are held in memory for
 deduplication. Existing output files are never overwritten.
 
-The archive uses an exclusive lock to prevent concurrent writers. A forced
-process kill or power loss may leave `.archive/lock`; remove that file only after
-checking that no downloader is using this archive, then repeat the command.
-Atomic JSON publication uses a hard link on the output filesystem, supported by
-normal NTFS/APFS/ext4 local volumes; a filesystem without hard-link support will
-retain the journal but fail to publish the final JSON.
+The archive uses an exclusive lock to prevent concurrent writers. A lock left by
+a crashed process is detected by PID and hostname and recovered automatically; a
+lock from another host, or from a live process, still blocks. Atomic JSON
+publication uses a hard link on the output filesystem when available, and falls
+back to an exclusive copy on filesystems without hard-link support.
 
 Twitch's internal API may reject cursor requests. In that case the downloader
 queries the last saved second again, verifies overlap, and deduplicates message
@@ -317,18 +320,24 @@ playlist references a missing `-unmuted.ts` segment, the server tries the matchi
 The server binds to `127.0.0.1`, uses a random session path, checks Host and Origin,
 and only proxies registered Twitch media resources. It rewrites child playlists,
 keys and initialization segments, validates redirects and supports byte ranges.
-Media bodies stream with backpressure and cancellation; chat is read by ranges.
-The browser receives local media URLs instead of Twitch playback credentials.
+Media bodies stream with backpressure and cancellation; a stalled upstream is
+aborted only when no data arrives, so slow segments are not cut off. Chat is read
+by ranges. The browser receives local media URLs instead of Twitch playback
+credentials.
 
 To build an installable package, run `npm pack`. Its `prepack` step builds the CLI
 and the standalone page. After installing that tarball, use `twitch-m3u8 watch`.
 The published package includes the web assets and third-party license notices;
 end users do not need the source checkout or frontend build tools.
 
+Keyboard shortcuts work anywhere on the page: `K` play/pause, left and right
+arrows seek 10 seconds, `M` mutes, `F` toggles fullscreen and `Escape` exits
+theater mode. Shortcuts are ignored while typing in an input.
+
 ### Local file mode
 
-The player is available on Watch VOD in the dashboard, or as an independent page
-that needs no Python backend or dashboard login:
+The player is also a standalone static page that needs no server beyond the one
+serving the files:
 
 ```bash
 npm --prefix frontend install
@@ -339,12 +348,12 @@ npm --prefix frontend run preview -- --host 127.0.0.1 --port 5173
 Open `http://127.0.0.1:5173/replay.html`. Choose a local video, then optionally
 select the `chat.json` exported by the CLI. Both files stay in your browser and
 are never uploaded. The preview server must stay running to serve the player
-assets. You can also visit `/replay.html` on a running dashboard server.
+assets.
 
 The player supports browser-playable video files, such as H.264/AAC MP4 or WebM.
-Standalone static preview and the dashboard accept local video files. Remote HLS
-streaming uses the npm `watch` server described above. Local M3U8 files are not
-supported. Unsupported codecs are reported without discarding the chat.
+Remote HLS streaming uses the npm `watch` server described above. Local M3U8
+files are not supported. Unsupported codecs are reported without discarding the
+chat.
 
 Chat follows the media clock during playback, pause, buffering, seeks and speed
 changes. Click a message timestamp to seek, search messages or users across the
@@ -366,32 +375,13 @@ tooltip. Image caching and permanent offline video archiving remain future work.
 Large chat JSON files are scanned in a Web Worker. The index stores byte ranges
 and timestamps, not the complete message bodies. Playback reads at most 80
 messages into the rendered window; scrolling back pauses following until you
-select Follow replay. Search reads the archive in batches and returns the first
-100 matches. The current limits are 4 GB per file, two million messages and 1 MB
-per message or metadata block. Select the final `.json` export, not the internal
-`pages.jsonl` journal. A damaged or unsupported archive produces a visible error.
+select Follow replay. Search scans the archive in order, with several range reads
+in flight, and returns the first 100 matches. The current limits are 4 GB per
+file, two million messages and 1 MB per message or metadata block. Select the
+final `.json` export, not the internal `pages.jsonl` journal. A damaged or
+unsupported archive produces a visible error.
 
-## Local dashboard
-
-The repository still includes the original FastAPI and React dashboard. Its
-**Watch VOD** page exposes the same resolver through a browser.
-
-```bash
-python -m pip install -e ".[dev]"
-cd frontend
-npm install
-npm run build
-cd ..
-
-# Set local dashboard credentials, then start it.
-set ADMIN_PASSWORD=change-me
-set ALLOW_RANDOM_ADMIN_PASSWORD=true
-python -m uvicorn dashboard:app --port 8080
-```
-
-Open `http://localhost:8080`.
-
-## CLI development
+## Development
 
 ```bash
 npm install
@@ -403,10 +393,25 @@ node dist/cli.js --help
 
 The package has no runtime dependencies. `npm test` compiles the TypeScript
 source and runs the resolver tests with Node's built-in test runner.
-`npm run test:package` packs the current `dist/` without running lifecycle
-scripts, installs the tarball into a temporary directory and checks the CLI,
-the bundled player assets and the public API. Run it after
-`npm run build:package`.
+`npm run test:package` rebuilds the package, packs it without running lifecycle
+scripts, installs the tarball into a temporary directory and checks the CLI, the
+bundled player assets and the public API.
+
+The player lives in `frontend/`:
+
+```bash
+npm --prefix frontend install
+npm --prefix frontend run lint
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run build
+npm --prefix frontend run test:browser
+```
+
+`npm --prefix frontend run build` writes the standalone player to
+`dist/player`, which `npm run build:package` also produces before packing. The
+browser regression needs Chromium; install it once with
+`npx --prefix frontend playwright install chromium`.
 
 ### Releasing
 
@@ -423,21 +428,6 @@ npm dist-tag add twitch-vod-m3u8@<version> latest
 explicitly when the default `npx twitch-vod-m3u8` install should point to the
 new version; until there is a stable release, both channels can track the
 newest beta.
-
-## Dashboard development
-
-```bash
-python -m pip install -e ".[dev]"
-ruff check .
-ruff format --check .
-python -m pytest
-
-cd frontend
-npm ci
-npm run lint
-npm test
-npm run build
-```
 
 ## Responsible use
 

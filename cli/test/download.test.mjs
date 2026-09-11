@@ -178,6 +178,81 @@ a.m4s
     assert.equal(await readFile(output, "utf8"), "ABC");
   });
 
+  it("fingerprints every segment, not just the edges", () => {
+    const first = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts\n#EXTINF:10,\nc.ts");
+    const second = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nX.ts\n#EXTINF:10,\nc.ts");
+    assert.equal(first.segments.length, second.segments.length);
+    assert.notEqual(fingerprintPlaylist(first), fingerprintPlaylist(second));
+  });
+
+  it("refuses redirects outside the Twitch media allowlist", async () => {
+    const directory = await workdir();
+    const output = join(directory, "out.ts");
+    const playlist = playlistWith("#EXTINF:10,\na.ts");
+    const calls = [];
+    await assert.rejects(
+      downloadPlaylist({
+        playlist,
+        output,
+        attempts: 1,
+        retryDelayMs: 1,
+        fetch: async (url) => {
+          calls.push(String(url));
+          return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private" } });
+        },
+      }),
+      (error) =>
+        error instanceof DownloadError &&
+        error.code === "SEGMENT_FAILED" &&
+        /outside Twitch/.test(error.message),
+    );
+    assert.equal(calls.length, 1);
+  });
+
+  it("rejects a segment larger than the configured limit", async () => {
+    const directory = await workdir();
+    const output = join(directory, "out.ts");
+    const playlist = playlistWith("#EXTINF:10,\na.ts");
+    await assert.rejects(
+      downloadPlaylist({
+        playlist,
+        output,
+        attempts: 1,
+        retryDelayMs: 1,
+        maxSegmentBytes: 4,
+        fetch: async () => new Response("AAAAA", { status: 200 }),
+      }),
+      (error) => error instanceof DownloadError && error.code === "SEGMENT_TOO_LARGE",
+    );
+  });
+
+  it("resumes a partial download written before the hashed fingerprint", async () => {
+    const directory = await workdir();
+    const output = join(directory, "out.ts");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts\n#EXTINF:10,\nc.ts");
+    await writeFile(`${output}.part`, "AB");
+    // Older releases identified the playlist by length and edge segments.
+    // Existing state files must keep resuming until the next snapshot rewrites them.
+    const legacyFingerprint = `${playlist.segments.length}|${playlist.initSegment ?? ""}|${
+      playlist.segments[0].uri
+    }|${playlist.segments.at(-1).uri}`;
+    await writeFile(
+      `${output}.part.json`,
+      JSON.stringify({ fingerprint: legacyFingerprint, segments: 2, bytes: 2 }),
+    );
+    const requested = [];
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      requested.push(key);
+      if (key === "c.ts") return new Response("C", { status: 200 });
+      return new Response("", { status: 404 });
+    };
+    const result = await downloadPlaylist({ playlist, output, fetch: fakeFetch, retryDelayMs: 1 });
+    assert.equal(result.resumedFrom, 2);
+    assert.equal(await readFile(output, "utf8"), "ABC");
+    assert.deepEqual(requested, ["c.ts"]);
+  });
+
   it("refuses to overwrite an existing output without force", async () => {
     const directory = await workdir();
     const output = join(directory, "out.ts");

@@ -1,5 +1,7 @@
+import { constants } from "node:fs";
 import { createReadStream } from "node:fs";
-import { link, mkdir, open, readFile, rename, rm, stat, truncate } from "node:fs/promises";
+import { copyFile, link, mkdir, open, readFile, rename, rm, stat, truncate, type FileHandle } from "node:fs/promises";
+import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
 import { array, ChatError, nullableString, number, parseStoredMessage, record, string, type ChatMessage, type VideoMetadata } from "./model.js";
@@ -33,6 +35,30 @@ export interface DownloadOptions {
 
 function isFsError(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+/**
+ * Remove a lock left behind by a crashed downloader. Only a lock whose recorded
+ * PID is gone on this host counts as stale; anything else stays locked.
+ */
+async function removeStaleLock(lockPath: string): Promise<boolean> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(lockPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return false;
+    const lock = parsed as Record<string, unknown>;
+    if (typeof lock.pid !== "number" || !Number.isInteger(lock.pid) || lock.pid <= 0) return false;
+    if (lock.host !== hostname()) return false;
+    try {
+      process.kill(lock.pid, 0);
+      return false;
+    } catch (error) {
+      if (!isFsError(error, "ESRCH")) return false;
+      await rm(lockPath, { force: true });
+      return true;
+    }
+  } catch {
+    return false;
+  }
 }
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
@@ -123,8 +149,21 @@ async function exportJson(args: { output: string; manifest: Manifest; journal: s
     await file.close();
   }
   // Publish atomically without replacing a file another process may have created.
-  await link(temporary, args.output);
-  await rm(temporary);
+  try {
+    await link(temporary, args.output);
+  } catch (error) {
+    if (
+      !isFsError(error, "EPERM") &&
+      !isFsError(error, "ENOSYS") &&
+      !isFsError(error, "EXDEV") &&
+      !isFsError(error, "EACCES")
+    )
+      throw error;
+    // Some filesystems cannot create hard links. COPYFILE_EXCL keeps the
+    // no-overwrite guarantee without a hard link.
+    await copyFile(temporary, args.output, constants.COPYFILE_EXCL);
+  }
+  await rm(temporary, { force: true });
 }
 
 export async function downloadChat(options: DownloadOptions): Promise<Manifest> {
@@ -135,14 +174,19 @@ export async function downloadChat(options: DownloadOptions): Promise<Manifest> 
   await mkdir(dirname(output), { recursive: true });
   await mkdir(directory, { recursive: true });
   const lockPath = join(directory, "lock");
-  let lock;
-  try {
-    lock = await open(lockPath, "wx");
-  } catch (error) {
-    if (isFsError(error, "EEXIST")) {
+  let lock: FileHandle | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      lock = await open(lockPath, "wx");
+      break;
+    } catch (error) {
+      if (!isFsError(error, "EEXIST")) throw error;
+      if (attempt === 0 && (await removeStaleLock(lockPath))) continue;
       throw new ChatError("ARCHIVE_LOCKED", `Archive is locked. If no downloader is running, remove ${lockPath} and retry.`);
     }
-    throw error;
+  }
+  if (!lock) {
+    throw new ChatError("ARCHIVE_LOCKED", `Archive is locked. If no downloader is running, remove ${lockPath} and retry.`);
   }
   const manifestPath = join(directory, "manifest.json");
   const journal = join(directory, "pages.jsonl");
@@ -152,7 +196,7 @@ export async function downloadChat(options: DownloadOptions): Promise<Manifest> 
   };
   let canSave = false;
   try {
-    await lock.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    await lock.writeFile(JSON.stringify({ pid: process.pid, host: hostname(), startedAt: new Date().toISOString() }));
     let existing = false;
     try {
       const stored = record(JSON.parse(await readFile(manifestPath, "utf8")));

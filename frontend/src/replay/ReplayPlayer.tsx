@@ -204,11 +204,10 @@ export function ReplayPlayer() {
   }, [ready, following, query, replayTime]);
 
   useEffect(() => {
+    // One id cancels any in-flight search, even while the input is debounced.
     const cancelId = ++searchId.current;
-    const id = ++searchId.current;
     setResults([]);
     if (!ready) return;
-    // Cancel an in-flight search immediately, even while the input is debounced.
     worker.current?.postMessage({
       kind: "search",
       id: cancelId,
@@ -217,6 +216,7 @@ export function ReplayPlayer() {
     setSearching(Boolean(query.trim()));
     if (!query.trim()) return;
     const timer = window.setTimeout(() => {
+      const id = ++searchId.current;
       worker.current?.postMessage({ kind: "search", id, query } satisfies WorkerRequest);
     }, 300);
     return () => window.clearTimeout(timer);
@@ -618,6 +618,9 @@ export function ReplayPlayer() {
             <div
               ref={log}
               aria-label="Chat messages"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions text"
               className="replay-chat-log"
               tabIndex={0}
               onScroll={() => {

@@ -54,7 +54,13 @@ export class TwitchChatClient implements ChatSource {
         if (Array.isArray(payload.errors) && payload.errors.length > 0) {
           const integrityFailure = payload.errors.some((value) => {
             const error = record(value);
-            return error.extensions !== undefined && record(error.extensions).code === "IntegrityCheckFailed";
+            const extensions = error.extensions;
+            return (
+              typeof extensions === "object" &&
+              extensions !== null &&
+              !Array.isArray(extensions) &&
+              record(extensions).code === "IntegrityCheckFailed"
+            );
           });
           if (integrityFailure) throw new ChatError("CURSOR_REJECTED", "Twitch rejected cursor pagination.");
           throw new ChatError("GRAPHQL_ERROR", "Twitch rejected the GraphQL request. Its internal API may have changed.");

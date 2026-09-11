@@ -5,7 +5,7 @@ import {
 } from "node:http";
 import { createReadStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
-import { join, resolve, extname, relative, isAbsolute } from "node:path";
+import { join, resolve, extname, relative, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes, createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
@@ -13,8 +13,9 @@ import { once } from "node:events";
 import { chooseFormat, resolveM3U8 } from "../resolver.js";
 import { downloadChat } from "../chat/archive.js";
 import { TwitchChatClient } from "../chat/twitch.js";
-import { record, string } from "../chat/model.js";
-import { byteRange, fetchMedia, MediaRegistry } from "./media.js";
+import { ChatError, record, string } from "../chat/model.js";
+import { fetchMedia } from "../net/media.js";
+import { byteRange, MediaRegistry } from "./media.js";
 import type { ResolveOptions, ResolveResult } from "../types.js";
 import type { PlayerSession } from "./types.js";
 export interface ServerOptions {
@@ -36,8 +37,17 @@ const contentTypes: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".woff2": "font/woff2",
   ".svg": "image/svg+xml",
-  ".json": "application/json",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".json": "application/json; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
 };
+/** Time allowed to connect and receive response headers. */
+const MEDIA_CONNECT_TIMEOUT_MS = 30_000;
+/** Time allowed between body chunks before the upstream stream is cancelled. */
+const MEDIA_IDLE_TIMEOUT_MS = 30_000;
 const json = (response: ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
@@ -58,6 +68,27 @@ async function readPlaylist(response: Response): Promise<string> {
     }
   } finally {
     await reader.cancel().catch(() => undefined);
+  }
+}
+
+/**
+ * Read one body chunk, aborting `abort` when no data arrives within
+ * `timeoutMs`. The caller has tied that controller's signal to the upstream
+ * fetch, so aborting it rejects `reader.read()` with the abort reason.
+ */
+export async function readChunkWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+  abort: AbortController,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  const timer = setTimeout(
+    () => abort.abort(new Error("Media stream stalled.")),
+    timeoutMs,
+  );
+  try {
+    return await reader.read();
+  } finally {
+    clearTimeout(timer);
   }
 }
 async function fileResponse(
@@ -102,10 +133,12 @@ async function fileResponse(
 
 export async function startWatchServer(options: ServerOptions) {
   const assets = resolve(options.assets);
-  await stat(join(assets, "replay.html")).catch(() => {
-    throw new Error(
-      "The bundled player is missing. From a checkout, run npm run build:package.",
-    );
+  await stat(join(assets, "replay.html")).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      throw new Error(
+        "The bundled player is missing. From a checkout, run npm run build:package.",
+      );
+    throw error;
   });
   const prefix = `/${randomBytes(24).toString("hex")}/`;
   let registry = new MediaRegistry(prefix);
@@ -335,11 +368,24 @@ export async function startWatchServer(options: ServerOptions) {
         }
         const abort = new AbortController();
         response.on("close", () => abort.abort());
-        const upstream = await fetchMedia(resource.url, {
-          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]),
-          ...(options.fetch ? { fetch: options.fetch } : {}),
-          ...(request.headers.range ? { range: request.headers.range } : {}),
-        });
+        // The connect timeout covers the request and its headers only. The body
+        // uses a per-chunk idle timeout below, so a slow segment is not killed
+        // just because the whole transfer takes longer than the timeout.
+        const connect = new AbortController();
+        const connectTimer = setTimeout(
+          () => connect.abort(new Error("Media connection timed out.")),
+          MEDIA_CONNECT_TIMEOUT_MS,
+        );
+        let upstream: Response;
+        try {
+          upstream = await fetchMedia(resource.url, {
+            signal: AbortSignal.any([abort.signal, connect.signal]),
+            ...(options.fetch ? { fetch: options.fetch } : {}),
+            ...(request.headers.range ? { range: request.headers.range } : {}),
+          });
+        } finally {
+          clearTimeout(connectTimer);
+        }
         if (!upstream.ok) {
           await upstream.body?.cancel();
           json(response, upstream.status, {
@@ -348,7 +394,16 @@ export async function startWatchServer(options: ServerOptions) {
           return;
         }
         if (resource.manifest) {
-          const text = await readPlaylist(upstream);
+          const playlistTimer = setTimeout(
+            () => abort.abort(new Error("Playlist download timed out.")),
+            MEDIA_CONNECT_TIMEOUT_MS,
+          );
+          let text: string;
+          try {
+            text = await readPlaylist(upstream);
+          } finally {
+            clearTimeout(playlistTimer);
+          }
           response.writeHead(200, {
             "Content-Type": "application/vnd.apple.mpegurl",
           });
@@ -382,7 +437,11 @@ export async function startWatchServer(options: ServerOptions) {
         const reader = upstream.body.getReader();
         try {
           while (true) {
-            const chunk = await reader.read();
+            const chunk = await readChunkWithIdleTimeout(
+              reader,
+              MEDIA_IDLE_TIMEOUT_MS,
+              abort,
+            );
             if (chunk.done) break;
             if (!response.write(chunk.value))
               await once(response, "drain", { signal: abort.signal });
@@ -402,7 +461,7 @@ export async function startWatchServer(options: ServerOptions) {
         route ? decodeURIComponent(route) : "replay.html",
       );
       const local = relative(assets, path);
-      if (local.startsWith("..") || isAbsolute(local)) {
+      if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) {
         response.writeHead(404).end();
         return;
       }
@@ -410,11 +469,16 @@ export async function startWatchServer(options: ServerOptions) {
     };
     void run().catch((error: unknown) => {
       if (response.headersSent) response.destroy();
-      else
-        json(response, error instanceof SyntaxError ? 400 : 502, {
+      else {
+        const clientError =
+          error instanceof SyntaxError ||
+          error instanceof URIError ||
+          error instanceof ChatError;
+        json(response, clientError ? 400 : 502, {
           error:
             error instanceof Error ? error.message : "Player request failed.",
         });
+      }
     });
   });
   await new Promise<void>((done, reject) => {

@@ -2,12 +2,15 @@
 
 ## Supported usage
 
-The CLI runs locally and sends requests only to Twitch playback services,
-Twitch VOD CDN domains, and SullyGnome. It does not require account cookies or
-OAuth credentials.
+The CLI runs locally. It sends requests only to Twitch playback services,
+Twitch VOD CDN domains, tracker sites, and Twitch's chat GraphQL endpoint when
+you archive a chat replay. It does not require account cookies or OAuth
+credentials.
 
-The optional dashboard should listen on `127.0.0.1` unless you have configured
-authentication and understand the risks of exposing it to a network.
+The `watch` command starts a local player server. That server binds to
+`127.0.0.1`, uses a random capability path, checks Host and Origin, only
+proxies media URLs on Twitch's CDN allowlist, and never exposes playback
+credentials to the browser. Do not expose it to a network.
 
 ## Reporting a vulnerability
 
@@ -21,12 +24,11 @@ and personal information from logs.
 
 ## Secrets
 
-The following files are ignored by Git and must remain private:
+These files are ignored by Git and must remain private:
 
 - `.env`
 - `client_secret*.json`
-- `youtube_credentials.pkl`
-- browser cookies and exported cookie files
+- exported browser cookies
 
 Public Twitch playback URLs can contain short-lived signed tokens. Treat them
 as temporary credentials and avoid posting them in issues.

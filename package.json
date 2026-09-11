@@ -28,6 +28,7 @@
     "typecheck": "tsc -p tsconfig.cli.json --noEmit",
     "test": "npm run build && node --test cli/test/*.test.mjs",
     "test:package": "node scripts/package-smoke.mjs",
+    "pretest:package": "npm run build:package",
     "prepack": "npm run build:package",
     "prepublishOnly": "npm run test"
   },

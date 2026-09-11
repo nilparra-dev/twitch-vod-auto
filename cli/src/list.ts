@@ -2,6 +2,7 @@ import { stdin, stderr, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 
 import { mapWithConcurrency } from "./concurrency.js";
+import { fetchMedia } from "./net/media.js";
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, ResolveError, resolveM3U8 } from "./resolver.js";
 import { downloadCommand } from "./download/command.js";
 import { fetchChannelVideos, GqlClient, type ChannelVideoNode } from "./twitch/gql.js";
@@ -177,7 +178,8 @@ export async function measurePlaylistDuration(
   options: { fetch?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<number | null> {
   try {
-    const response = await (options.fetch ?? fetch)(url, {
+    const response = await fetchMedia(url, {
+      ...(options.fetch ? { fetch: options.fetch } : {}),
       signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
     });
     if (!response.ok) {
@@ -431,16 +433,33 @@ export async function listCommand(args: string[]): Promise<void> {
 
   const client = new GqlClient({});
   const fetchLimit = options.all ? 2000 : options.limit;
+  const warnings: string[] = [];
+  const recordFailure = (source: string, error: unknown) => {
+    warnings.push(`${source}: ${error instanceof Error ? error.message : String(error)}`);
+  };
   const [videos, twitTracker, streamerVitals] = await Promise.all([
-    fetchChannelVideos(client, login, { limit: fetchLimit, all: options.all }).catch(() => [] as ChannelVideoNode[]),
-    fetchTwitTrackerStreams(login).catch(() => [] as TrackerStream[]),
-    fetchStreamerVitalsStreams(login).catch(() => [] as TrackerStream[]),
+    fetchChannelVideos(client, login, { limit: fetchLimit, all: options.all }).catch((error: unknown) => {
+      recordFailure("Twitch archive", error);
+      return [] as ChannelVideoNode[];
+    }),
+    fetchTwitTrackerStreams(login).catch((error: unknown) => {
+      recordFailure("TwitchTracker", error);
+      return [] as TrackerStream[];
+    }),
+    fetchStreamerVitalsStreams(login).catch((error: unknown) => {
+      recordFailure("StreamerVitals", error);
+      return [] as TrackerStream[];
+    }),
   ]);
+  if (warnings.length > 0 && !options.json) {
+    for (const warning of warnings) stderr.write(`Warning: ${warning}\n`);
+  }
 
   const merged = mergeChannelStreams({ videos, twitTracker, streamerVitals }).slice(0, options.limit);
   if (merged.length === 0) {
     throw new ResolveError(
-      `No streams found for "${login}". Twitch returned no public archive and the tracker sources returned nothing.`,
+      `No streams found for "${login}". Twitch returned no public archive and the tracker sources returned nothing.` +
+        (warnings.length > 0 ? ` Source errors: ${warnings.join("; ")}.` : ""),
       "NOT_FOUND",
     );
   }
@@ -467,7 +486,7 @@ export async function listCommand(args: string[]): Promise<void> {
     }
     if (options.targetRequested) {
       if (options.json) {
-        stdout.write(`${JSON.stringify({ channel: login, stream: toJson(entry) }, null, 2)}\n`);
+        stdout.write(`${JSON.stringify({ channel: login, stream: toJson(entry), warnings }, null, 2)}\n`);
       } else {
         stdout.write(`${entry.target}\n`);
       }
@@ -496,7 +515,7 @@ export async function listCommand(args: string[]): Promise<void> {
     const format = chooseFormat(result.formats, options.quality);
     if (options.json) {
       stdout.write(
-        `${JSON.stringify({ channel: login, target: entry.target, selected: format, formats: result.formats }, null, 2)}\n`,
+        `${JSON.stringify({ channel: login, target: entry.target, selected: format, formats: result.formats, warnings }, null, 2)}\n`,
       );
     } else {
       stdout.write(`${format.url}\n`);
@@ -516,7 +535,7 @@ export async function listCommand(args: string[]): Promise<void> {
 
   if (options.json) {
     stdout.write(
-      `${JSON.stringify({ channel: login, count: entries.length, streams: entries.map(toJson) }, null, 2)}\n`,
+      `${JSON.stringify({ channel: login, count: entries.length, streams: entries.map(toJson), warnings }, null, 2)}\n`,
     );
     return;
   }
