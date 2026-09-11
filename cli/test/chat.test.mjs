@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { mkdtemp, readFile, writeFile, appendFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, rm, stat } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { downloadChat } from "../../dist/chat/archive.js";
@@ -86,6 +86,13 @@ describe("Twitch chat protocol", () => {
     } });
     await assert.rejects(client.resolve("999999999999", "some_channel"), errorCode("PAGINATION_STALLED"));
     assert.deepEqual(requests, [null, "same"]);
+  });
+
+  it("classifies GraphQL errors with null extensions instead of failing validation", async () => {
+    const client = new TwitchChatClient({ retryDelayMs: 0, fetch: async () =>
+      new Response(JSON.stringify({ errors: [{ message: "nope", extensions: null }] }), { status: 200 }),
+    });
+    await assert.rejects(client.video("123"), errorCode("GRAPHQL_ERROR"));
   });
 
   it("takes a VOD URL literally, even with a long ID, without querying discovery", async () => {
@@ -327,6 +334,24 @@ describe("resumable chat archive", () => {
       release();
       await first;
     }
+  });
+
+  it("recovers a lock left by a crashed downloader", async () => {
+    const output = await outputPath();
+    const directory = `${output}.archive`;
+    await mkdir(directory, { recursive: true });
+    // A finished child process gives us a PID that is no longer running.
+    const finished = spawnSync(process.execPath, ["-e", ""]);
+    assert.ok(finished.pid);
+    await writeFile(
+      join(directory, "lock"),
+      JSON.stringify({ pid: finished.pid, host: hostname(), startedAt: new Date().toISOString() }),
+    );
+    const result = await downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata, page: async () => ({ messages: [a], nextCursor: null }),
+    } });
+    assert.equal(result.status, "complete");
+    assert.equal(JSON.parse(await readFile(output, "utf8")).messages.length, 1);
   });
 
   it("does not discard corruption in a committed page", async () => {

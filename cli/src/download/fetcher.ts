@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { open, readFile, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { allowedMediaUrl } from "../watch/media.js";
+import { allowedMediaUrl, fetchMedia } from "../net/media.js";
 import type { MediaPlaylist } from "./playlist.js";
 
 export class DownloadError extends Error {
@@ -30,6 +31,8 @@ export interface DownloadOptions {
   timeoutMs?: number;
   attempts?: number;
   retryDelayMs?: number;
+  /** Largest allowed response for one segment or init section. */
+  maxSegmentBytes?: number;
   signal?: AbortSignal;
   force?: boolean;
   onProgress?: (progress: DownloadProgress) => void;
@@ -49,8 +52,29 @@ interface ResumeState {
   bytes: number;
 }
 
-/** Identifies a playlist so a partial download cannot be resumed with another one. */
+/**
+ * Identifies a playlist so a partial download cannot be resumed with another
+ * one. Hashes every segment URI, not just the first and last, so two different
+ * playlists that share their length and edge segments still differ.
+ */
 export function fingerprintPlaylist(playlist: MediaPlaylist): string {
+  const hash = createHash("sha256");
+  hash.update(`segments:${playlist.segments.length}\n`);
+  hash.update(`init:${playlist.initSegment ?? ""}\n`);
+  for (const segment of playlist.segments) {
+    hash.update(segment.uri);
+    hash.update("\n");
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Fingerprint written by releases before the hashed format. It only covers the
+ * playlist length and edge segments. Kept so an interrupted download can still
+ * resume after an upgrade; the next snapshot rewrites it in the hashed format.
+ * The weaker coverage matches what those releases already accepted.
+ */
+function legacyFingerprintPlaylist(playlist: MediaPlaylist): string {
   const first = playlist.segments[0]?.uri ?? "";
   const last = playlist.segments.at(-1)?.uri ?? "";
   return `${playlist.segments.length}|${playlist.initSegment ?? ""}|${first}|${last}`;
@@ -121,6 +145,7 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
   const total = playlist.segments.length;
   if (total === 0) throw new DownloadError("The playlist has no segments.", "EMPTY_PLAYLIST");
   const expected = fingerprintPlaylist(playlist);
+  const legacyExpected = legacyFingerprintPlaylist(playlist);
 
   if (!options.force && (await exists(output))) {
     throw new DownloadError(
@@ -134,7 +159,7 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
   let resumed = false;
   const state = await readState(statePath);
   if (state) {
-    if (state.fingerprint !== expected) {
+    if (state.fingerprint !== expected && state.fingerprint !== legacyExpected) {
       throw new DownloadError(
         `A partial download for a different playlist exists at ${part}. Remove it or use --force.`,
         "STATE_MISMATCH",
@@ -168,6 +193,7 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
   const attempts = Math.max(1, options.attempts ?? 4);
   const retryDelayMs = options.retryDelayMs ?? 500;
   const timeoutMs = options.timeoutMs ?? 60_000;
+  const maxSegmentBytes = options.maxSegmentBytes ?? 256 * 1024 * 1024;
   const concurrency = Math.max(1, Math.min(32, options.concurrency ?? 8));
 
   async function fetchSegment(uri: string, index: number): Promise<Buffer> {
@@ -180,8 +206,29 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
       try {
         assertAllowedMediaUrl(target);
         const timeout = AbortSignal.timeout(timeoutMs);
-        const response = await fetchFn(target, { signal: AbortSignal.any([timeout, signal]) });
-        if (response.ok) return Buffer.from(await response.arrayBuffer());
+        // fetchMedia validates every redirect hop before following it.
+        const response = await fetchMedia(target, {
+          fetch: fetchFn,
+          signal: AbortSignal.any([timeout, signal]),
+        });
+        if (response.ok) {
+          const declared = Number(response.headers.get("content-length"));
+          if (Number.isFinite(declared) && declared > maxSegmentBytes) {
+            await response.body?.cancel();
+            throw new DownloadError(
+              `Segment ${index + 1} exceeds the ${Math.round(maxSegmentBytes / (1024 * 1024))} MB size limit.`,
+              "SEGMENT_TOO_LARGE",
+            );
+          }
+          const body = Buffer.from(await response.arrayBuffer());
+          if (body.length > maxSegmentBytes) {
+            throw new DownloadError(
+              `Segment ${index + 1} exceeds the ${Math.round(maxSegmentBytes / (1024 * 1024))} MB size limit.`,
+              "SEGMENT_TOO_LARGE",
+            );
+          }
+          return body;
+        }
         const status = response.status;
         await response.body?.cancel();
         // Archived playlists can keep an unavailable unmuted name while the

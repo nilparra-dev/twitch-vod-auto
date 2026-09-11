@@ -11,19 +11,15 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { ArchiveInfo, ChatMessage } from "./archive";
-import type { WorkerRequest, WorkerResponse } from "./protocol";
+import type { ChatMessage } from "./archive";
+import { useChatReplay } from "./useChatReplay";
+import { usePositionPersistence } from "./usePositionPersistence";
 import { usePlayerBridge } from "./session";
+import { useTheaterMode } from "./useTheaterMode";
 import { useHls } from "./useHls";
 import { VideoControls } from "./VideoControls";
 import { clock } from "./time";
 import "./player.css";
-
-type ChatState =
-  | { kind: "none" }
-  | { kind: "loading"; percent: number }
-  | { kind: "ready"; info: ArchiveInfo }
-  | { kind: "error"; message: string };
 
 function Message({ message, seek }: { message: ChatMessage; seek: (time: number) => void }) {
   const color = message.color && /^#[a-f\d]{6}$/i.test(message.color) ? message.color : undefined;
@@ -66,23 +62,12 @@ export function ReplayPlayer() {
   const [ignoreRemoteChat, setIgnoreRemoteChat] = useState(-1);
   const [videoError, setVideoError] = useState("");
   const [chatFile, setChatFile] = useState<File | null>(null);
-  const [chat, setChat] = useState<ChatState>({ kind: "none" });
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [results, setResults] = useState<ChatMessage[]>([]);
-  const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
   const [time, setTime] = useState(0);
   const [shift, setShift] = useState(0);
   const [speed, setSpeed] = useState(1);
-  const [following, setFollowing] = useState(true);
-  const [theater, setTheater] = useState(false);
   const [chatVisible, setChatVisible] = useState(true);
+  const [theater, setTheater] = useTheaterMode();
   const video = useRef<HTMLVideoElement>(null);
-  const log = useRef<HTMLDivElement>(null);
-  const worker = useRef<Worker | null>(null);
-  const windowId = useRef(0);
-  const searchId = useRef(0);
-  const lastSaved = useRef(0);
   const videoPicker = useRef<HTMLInputElement>(null);
   const chatPicker = useRef<HTMLInputElement>(null);
   const storageKey = videoFile
@@ -91,7 +76,6 @@ export function ReplayPlayer() {
       ? `replay:stream:${media.key}`
       : "";
   const replayTime = time + shift;
-  const ready = chat.kind === "ready";
   const remote = bridge?.session;
   const remoteChat =
     remote?.state === "ready" &&
@@ -103,6 +87,28 @@ export function ReplayPlayer() {
   const remoteChatUrl = remoteChat?.url;
   const remoteChatSize = remoteChat?.size ?? 0;
   const title = media?.kind === "remote" ? media.title : videoFile?.name;
+
+  const {
+    chat,
+    ready,
+    query,
+    setQuery,
+    searching,
+    displayed,
+    resultsFull,
+    following,
+    setFollowing,
+    log,
+    reset,
+    clearWindow,
+  } = useChatReplay({
+    file: chatFile,
+    ...(remoteChatUrl ? { remoteUrl: remoteChatUrl } : {}),
+    remoteSize: remoteChatSize,
+    time: replayTime,
+  });
+  const { remember, restore } = usePositionPersistence(storageKey, video);
+
   useHls(video, videoUrl, media?.kind === "remote", setVideoError);
 
   useEffect(() => {
@@ -126,9 +132,8 @@ export function ReplayPlayer() {
     setTime(0);
     setShift(0);
     setSpeed(1);
-    setQuery("");
-    setFollowing(true);
-  }, [remote, loadedRevision]);
+    reset();
+  }, [remote, loadedRevision, reset]);
 
   useEffect(() => {
     return () => {
@@ -136,142 +141,14 @@ export function ReplayPlayer() {
     };
   }, [media]);
 
-  useEffect(() => {
-    setMessages([]);
-    setResults([]);
-    if (!chatFile && !remoteChatUrl) {
-      setChat({ kind: "none" });
-      return;
-    }
-    let instance: Worker;
-    try {
-      instance = new Worker(new URL("./chat.worker.ts", import.meta.url), { type: "module" });
-    } catch {
-      setChat({
-        kind: "error",
-        message: "Could not start the chat reader. Reload the page and try again.",
-      });
-      return;
-    }
-    worker.current = instance;
-    setChat({ kind: "loading", percent: 0 });
-    instance.onmessage = ({ data }: MessageEvent<WorkerResponse>) => {
-      if (worker.current !== instance) return;
-      switch (data.kind) {
-        case "progress":
-          setChat({ kind: "loading", percent: data.percent });
-          break;
-        case "ready":
-          setChat({ kind: "ready", info: data.info });
-          break;
-        case "window":
-          if (data.id === windowId.current) setMessages(data.messages);
-          break;
-        case "search":
-          if (data.id === searchId.current) {
-            setResults(data.messages);
-            setSearching(false);
-          }
-          break;
-        case "error":
-          setChat({ kind: "error", message: data.message });
-          setSearching(false);
-          break;
-      }
-    };
-    instance.onerror = () =>
-      setChat({ kind: "error", message: "The chat reader stopped. Try opening the file again." });
-    if (chatFile) instance.postMessage({ kind: "load", file: chatFile } satisfies WorkerRequest);
-    else if (remoteChatUrl)
-      instance.postMessage({
-        kind: "loadRemote",
-        url: new URL(remoteChatUrl, location.href).href,
-        size: remoteChatSize,
-      } satisfies WorkerRequest);
-    return () => {
-      worker.current = null;
-      instance.terminate();
-    };
-  }, [chatFile, remoteChatUrl, remoteChatSize]);
-
-  useEffect(() => {
-    if (!ready || !following || query.trim()) return;
-    worker.current?.postMessage({
-      kind: "window",
-      id: ++windowId.current,
-      time: replayTime,
-    } satisfies WorkerRequest);
-  }, [ready, following, query, replayTime]);
-
-  useEffect(() => {
-    const cancelId = ++searchId.current;
-    const id = ++searchId.current;
-    setResults([]);
-    if (!ready) return;
-    // Cancel an in-flight search immediately, even while the input is debounced.
-    worker.current?.postMessage({
-      kind: "search",
-      id: cancelId,
-      query: "",
-    } satisfies WorkerRequest);
-    setSearching(Boolean(query.trim()));
-    if (!query.trim()) return;
-    const timer = window.setTimeout(() => {
-      worker.current?.postMessage({ kind: "search", id, query } satisfies WorkerRequest);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [query, ready]);
-
-  useEffect(() => {
-    if (following && !query.trim() && log.current) log.current.scrollTop = log.current.scrollHeight;
-  }, [messages, following, query]);
-
-  useEffect(() => {
-    if (!theater) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setTheater(false);
-    };
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.body.style.overflow = previous;
-      document.removeEventListener("keydown", escape);
-    };
-  }, [theater]);
-
-  useEffect(() => {
-    const save = () => {
-      if (!storageKey || !video.current) return;
-      try {
-        localStorage.setItem(storageKey, String(video.current.currentTime));
-      } catch {
-        /* Storage is optional. */
-      }
-    };
-    window.addEventListener("pagehide", save);
-    return () => window.removeEventListener("pagehide", save);
-  }, [storageKey]);
-
-  function persist(force = false) {
-    const element = video.current;
-    if (!element || !storageKey || (!force && Date.now() - lastSaved.current < 3000)) return;
-    lastSaved.current = Date.now();
-    try {
-      localStorage.setItem(storageKey, String(element.currentTime));
-    } catch {
-      /* Playback works without browser storage. */
-    }
-  }
-
   function updateTime() {
     if (video.current) setTime(video.current.currentTime);
-    persist();
+    remember();
   }
 
   function selectVideo(file: File | undefined) {
     if (!file) return;
-    persist(true);
+    remember(true);
     setMedia({ kind: "local", file, url: URL.createObjectURL(file) });
     setIgnoreRemoteChat(remote?.revision ?? -1);
     setVideoError("");
@@ -279,25 +156,21 @@ export function ReplayPlayer() {
     setShift(0);
     setSpeed(1);
     setChatFile(null);
-    setQuery("");
-    setFollowing(true);
-    lastSaved.current = 0;
+    reset();
   }
 
   function seek(offset: number) {
     const element = video.current;
     if (!element || !Number.isFinite(element.duration)) return;
     element.currentTime = Math.min(element.duration, Math.max(0, offset - shift));
-    setMessages([]);
-    setQuery("");
-    setFollowing(true);
+    reset();
     updateTime();
-    persist(true);
+    remember(true);
   }
 
   async function openTarget(input = target) {
     if (!bridge || !input.trim()) return;
-    persist(true);
+    remember(true);
     setOpenError("");
     try {
       await bridge.load(input.trim(), channel.trim() || undefined);
@@ -306,9 +179,6 @@ export function ReplayPlayer() {
     }
   }
 
-  const displayed = query.trim()
-    ? results
-    : messages.filter((message) => message.offsetSeconds <= replayTime);
   const resolving = remote?.state === "resolving";
   const sourceError = openError || bridgeError || (remote?.state === "error" ? remote.error : "");
   const downloading =
@@ -433,7 +303,7 @@ export function ReplayPlayer() {
                 aria-label="Archived video"
                 onTimeUpdate={updateTime}
                 onSeeking={() => {
-                  setMessages([]);
+                  clearWindow();
                   setFollowing(true);
                   updateTime();
                 }}
@@ -442,9 +312,9 @@ export function ReplayPlayer() {
                 onPlaying={updateTime}
                 onPause={() => {
                   updateTime();
-                  persist(true);
+                  remember(true);
                 }}
-                onEnded={() => persist(true)}
+                onEnded={() => remember(true)}
                 onRateChange={() => {
                   if (video.current) setSpeed(video.current.playbackRate);
                 }}
@@ -452,13 +322,7 @@ export function ReplayPlayer() {
                   const element = video.current;
                   if (!element) return;
                   element.playbackRate = speed;
-                  try {
-                    const saved = Number(localStorage.getItem(storageKey));
-                    if (Number.isFinite(saved) && saved > 0 && saved < element.duration - 2)
-                      element.currentTime = saved;
-                  } catch {
-                    /* Storage is optional. */
-                  }
+                  restore();
                   updateTime();
                 }}
                 onError={() =>
@@ -514,7 +378,7 @@ export function ReplayPlayer() {
                   title="Video quality"
                   value={media.url}
                   onChange={(event) => {
-                    persist(true);
+                    remember(true);
                     setVideoError("");
                     setMedia({ ...media, url: event.target.value });
                   }}
@@ -618,6 +482,9 @@ export function ReplayPlayer() {
             <div
               ref={log}
               aria-label="Chat messages"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions text"
               className="replay-chat-log"
               tabIndex={0}
               onScroll={() => {
@@ -679,7 +546,7 @@ export function ReplayPlayer() {
                 displayed.map((message) => (
                   <Message key={message.id} message={message} seek={seek} />
                 ))}
-              {query.trim() && results.length === 100 && (
+              {query.trim() && resultsFull && (
                 <p className="replay-chat-status">
                   First 100 matches. Refine your search to find more.
                 </p>
@@ -729,7 +596,7 @@ export function ReplayPlayer() {
                     const value = event.target.valueAsNumber;
                     if (Number.isFinite(value)) {
                       setShift(Math.max(-86400, Math.min(86400, value)));
-                      setMessages([]);
+                      clearWindow();
                       setFollowing(true);
                     }
                   }}

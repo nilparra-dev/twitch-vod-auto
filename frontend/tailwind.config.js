@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  content: ["./replay.html", "./src/**/*.{ts,tsx}"],
   darkMode: "class",
   theme: {
     extend: {
@@ -22,7 +22,6 @@ export default {
         danger: "var(--danger)",
       },
       fontFamily: {
-        display: ['"Fraunces Variable"', "Fraunces", "Georgia", "serif"],
         sans: ['"Inter Variable"', "Inter", "system-ui", "sans-serif"],
         tight: ['"Inter Tight Variable"', '"Inter Variable"', "sans-serif"],
         mono: ['"JetBrains Mono Variable"', "ui-monospace", "monospace"],

@@ -162,7 +162,7 @@ function commandExists(command: string): boolean {
   return spawnSync(lookup, [command], { stdio: "ignore" }).status === 0;
 }
 
-function openPlayer(url: string, requested?: string): void {
+function openPlayer(url: string, requested?: string): Promise<void> {
   let command: string | undefined;
   let args = [url];
 
@@ -186,8 +186,17 @@ function openPlayer(url: string, requested?: string): void {
   }
 
   if (!command) throw new ResolveError("VLC or MPV was not found. Install a player or copy the URL with --copy.");
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.unref();
+  const playerCommand = command;
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(playerCommand, args, { detached: true, stdio: "ignore" });
+    // A missing or unexecutable player fails asynchronously; surface it instead
+    // of crashing with an unhandled "error" event.
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 function copyToClipboard(value: string): void {
@@ -252,7 +261,7 @@ async function main(): Promise<void> {
     if (stderr.isTTY) stderr.write("URL copied.\n");
   }
   if (options.open) {
-    openPlayer(selected.url, options.player);
+    await openPlayer(selected.url, options.player);
     if (stderr.isTTY) stderr.write("Player opened.\n");
   }
 }

@@ -4,13 +4,9 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { get } from "node:http";
-import {
-  allowedMediaUrl,
-  MediaRegistry,
-  fetchMedia,
-  byteRange,
-} from "../../dist/watch/media.js";
-import { startWatchServer } from "../../dist/watch/server.js";
+import { allowedMediaUrl, fetchMedia } from "../../dist/net/media.js";
+import { MediaRegistry, byteRange } from "../../dist/watch/media.js";
+import { startWatchServer, readChunkWithIdleTimeout } from "../../dist/watch/server.js";
 
 const media = "https://vod-secure.twitch.tv.invalid/file.m3u8";
 const source = "https://video-weaver.test.ttvnw.net/archive/index.m3u8";
@@ -211,6 +207,43 @@ test("server requires its capability path, expected Host and same-origin writes"
     202,
   );
   assert.equal((await ready(server)).input, "123");
+});
+test("an idle media body aborts instead of hanging", async () => {
+  const abort = new AbortController();
+  const stream = new ReadableStream({
+    start(controller) {
+      abort.signal.addEventListener("abort", () =>
+        controller.error(abort.signal.reason),
+      );
+    },
+  });
+  const reader = stream.getReader();
+  await assert.rejects(readChunkWithIdleTimeout(reader, 10, abort));
+  assert.equal(abort.signal.aborted, true);
+});
+test("maps malformed requests to 400 and blocks encoded traversal", async (t) => {
+  const server = await fixture(t);
+  for (const body of ["null", "[]", '{"input":123}', '{"input":["x"]}']) {
+    const response = await fetch(server.api + "resolve", {
+      method: "POST",
+      headers: { Origin: server.origin },
+      body,
+    });
+    assert.equal(response.status, 400, `body ${body} should be a client error`);
+  }
+  for (const route of ["%2e%2e%2fserver.js", "..%2fserver.js"]) {
+    const response = await fetch(new URL(route, server.url));
+    assert.equal(response.status, 404, `route ${route} should not escape the asset root`);
+  }
+  for (const route of ["%zz", "%E0%A4%A"]) {
+    const response = await fetch(new URL(route, server.url));
+    assert.equal(response.status, 400, `route ${route} should be a bad request`);
+  }
+  // A legitimate file whose name starts with dots must still be served.
+  await writeFile(join(server.directory, "..config.txt"), "ok");
+  const dots = await fetch(new URL("..config.txt", server.url));
+  assert.equal(dots.status, 200);
+  assert.equal(await dots.text(), "ok");
 });
 test("media proxy rewrites manifests and relays segment byte ranges", async (t) => {
   const calls = [];

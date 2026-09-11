@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { parseInput } from "../resolver.js";
+import { GqlQueryError, queryTwitchGql } from "../twitch/query.js";
 import {
   array, ChatError, nullableString, number, parseMessage, record, string,
   type ChatPage, type VideoMetadata,
@@ -24,50 +25,36 @@ export class TwitchChatClient implements ChatSource {
   } = {}) {}
 
   private async query(body: unknown): Promise<Record<string, unknown>> {
-    const attempts = this.options.attempts ?? 4;
-    let lastError: unknown;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      this.options.signal?.throwIfAborted();
-      let waitMs = (this.options.retryDelayMs ?? 500) * 2 ** attempt;
-      try {
-        const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 15_000);
-        const signal = this.options.signal ? AbortSignal.any([timeout, this.options.signal]) : timeout;
-        const response = await (this.options.fetch ?? fetch)("https://gql.twitch.tv/gql", {
-          method: "POST",
-          headers: { "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko", "Content-Type": "application/json" },
-          body: JSON.stringify(body), signal,
-        });
-        if (!response.ok) {
-          await response.body?.cancel();
-          if (response.status !== 429 && response.status < 500) {
-            throw new ChatError("HTTP_ERROR", `Twitch returned HTTP ${response.status}.`);
-          }
-          const retryAfter = response.headers.get("retry-after");
-          if (retryAfter) {
-            const seconds = Number(retryAfter);
-            const requested = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
-            if (Number.isFinite(requested)) waitMs = Math.max(waitMs, Math.min(60_000, requested));
-          }
-          throw new Error(`Twitch returned HTTP ${response.status}.`);
-        }
-        const payload = record(await response.json());
-        if (Array.isArray(payload.errors) && payload.errors.length > 0) {
-          const integrityFailure = payload.errors.some((value) => {
-            const error = record(value);
-            return error.extensions !== undefined && record(error.extensions).code === "IntegrityCheckFailed";
+    try {
+      return await queryTwitchGql(body, {
+        ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+        ...(this.options.signal ? { signal: this.options.signal } : {}),
+        ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {}),
+        ...(this.options.attempts !== undefined ? { attempts: this.options.attempts } : {}),
+        ...(this.options.retryDelayMs !== undefined ? { retryDelayMs: this.options.retryDelayMs } : {}),
+        graphqlErrors: (errors) => {
+          const integrityFailure = errors.some((value) => {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+            const extensions = (value as Record<string, unknown>).extensions;
+            return (
+              typeof extensions === "object" &&
+              extensions !== null &&
+              !Array.isArray(extensions) &&
+              (extensions as Record<string, unknown>).code === "IntegrityCheckFailed"
+            );
           });
-          if (integrityFailure) throw new ChatError("CURSOR_REJECTED", "Twitch rejected cursor pagination.");
-          throw new ChatError("GRAPHQL_ERROR", "Twitch rejected the GraphQL request. Its internal API may have changed.");
-        }
-        return record(payload.data);
-      } catch (error) {
-        this.options.signal?.throwIfAborted();
-        if (error instanceof ChatError) throw error;
-        lastError = error;
-      }
-      if (attempt + 1 < attempts) await delay(waitMs, undefined, { signal: this.options.signal });
+          return integrityFailure
+            ? new GqlQueryError("CURSOR_REJECTED", "Twitch rejected cursor pagination.")
+            : new GqlQueryError(
+                "GRAPHQL_ERROR",
+                "Twitch rejected the GraphQL request. Its internal API may have changed.",
+              );
+        },
+      });
+    } catch (error) {
+      if (error instanceof GqlQueryError) throw new ChatError(error.code, error.message);
+      throw error;
     }
-    throw new ChatError("NETWORK_ERROR", lastError instanceof Error ? lastError.message : "Twitch request failed.");
   }
 
   async video(vodId: string): Promise<VideoMetadata | null> {

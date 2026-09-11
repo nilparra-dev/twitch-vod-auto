@@ -1,14 +1,13 @@
 # VOD discovery and channel listing improvements
 
-Status: implemented in the TypeScript CLI (September 2026). The Python pipeline
-mirror remains pending.
+Status: implemented in the TypeScript CLI (September 2026).
 
 Implemented: exact timestamp sources (TwiTracker, StreamerVitals, SullyGnome),
 bounded timestamp window fallback, multi-quality domain probing with GET
 fallback and alias domains, per-channel domain ordering, the `list` command
 with `--url`/`--watch`/`--probe`, and structured error codes. Pending: the
-Python mirror, the optional browser fallback for Cloudflare-protected
-trackers, and storyboard-domain discovery.
+optional browser fallback for Cloudflare-protected trackers and
+storyboard-domain discovery.
 
 This document analyses how the resolver finds Twitch VODs today, records
 measurements taken against the live services, and proposes a discovery pipeline
@@ -33,10 +32,8 @@ The TypeScript CLI (`cli/src/resolver.ts`) resolves three kinds of input:
 
 `cli/src/chat/twitch.ts` already knows how to map a stream ID to a VOD ID: it
 scans `user.videos` and matches the stream ID and start time parsed from
-`seekPreviewsURL`. This logic is only used for chat today.
-
-The Python pipeline duplicates path 1 and 2 in `m3u8_resolver.py`, uses Helix in
-`twitch_api.py`, and scrapes TwitchTracker/StreamsCharts in `monitor.py`.
+`seekPreviewsURL`. This logic is only used for chat today. The original Python
+pipeline was removed; the TypeScript CLI is the only implementation.
 
 ## Measurements (September 2026)
 
@@ -181,7 +178,6 @@ before resolving, and directly answers "list the channel's recent VODs".
 | P1 | Cache observed domains per channel with TTL | new `cli/src/twitch/domains.ts` |
 | P1 | Structured errors and `--json` diagnostics | `cli/src/resolver.ts`, `cli/src/cli.ts` |
 | P2 | Storyboard-domain discovery when metadata is available | `cli/src/resolver.ts` |
-| P2 | Mirror the pipeline in Python (domains, timestamps, probe) | `m3u8_resolver.py`, `monitor.py` |
 | P2 | Opt-in integration test recovering a hidden VOD by timestamp | `cli/test/` |
 
 ## Risks and mitigations

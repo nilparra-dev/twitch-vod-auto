@@ -34,11 +34,12 @@ preserves `createdAt` as returned by Twitch; synchronization must use
 
 ## Stage 2: local replay
 
-Implemented in `frontend/src/replay/` and shared by Watch VOD and the standalone
-`replay.html` entry. The standalone page requires only the built static assets,
-with no Python or account login. It accepts a local browser-playable video and an
-optional exported chat JSON. Selection is explicit; it makes no automatic claim
-that two files describe the same broadcast. Changing video clears that association.
+Implemented in `frontend/src/replay/` and used by the standalone `replay.html`
+entry, which the `watch` command also serves. The page requires only the built
+static assets, with no backend or account login. It accepts a local
+browser-playable video and an optional exported chat JSON. Selection is explicit;
+it makes no automatic claim that two files describe the same broadcast. Changing
+video clears that association.
 
 `archive.ts` scans UTF-8 JSON in 256 KB chunks, validates normalized messages using
 the CLI's shared schema parser, and builds byte-range/time entries. `chat.worker.ts`
@@ -103,23 +104,8 @@ exports or resumable journals. Missing chat does not stop video playback.
 
 `npm pack` builds the CLI and `dist/player` before packing. Published users need
 only Node and a browser. License notices for bundled dependencies are included.
-The static dashboard/preview remains a file player; remote streaming requires
-the npm launcher. No npm release has been published for this stage.
-
-## Stage 4: dashboard automation
-
-Python keeps orchestration and calls the same Node engine with structured output.
-Do not create a second chat downloader in Python.
-
-Before integration, migrate the legacy monitor's overloaded `video_id` field:
-tracker stream IDs and Twitch VOD IDs must be separate. Keep stable internal
-archive identity plus optional `stream_id` and `twitch_vod_id`. Confirm a broadcast
-has ended and its archive is ready before scheduling post-stream jobs.
-
-Track video and chat jobs independently, including partial/unavailable outcomes.
-Keep archived assets outside the pipeline's existing cleanup-after-YouTube-upload
-policy. Imported chat should require an explicit association if stream identity
-cannot be verified.
+The static preview remains a file player; remote streaming requires the npm
+launcher.
 
 ## Validation
 
@@ -143,15 +129,14 @@ this plan, with no runtime dependencies added. No npm release was published.
 
 The player adds 12 automated tests for index construction, UTF-8/chunk boundaries,
 equal-time messages, backwards seeks, invalid archives, search, stale replies,
-clock/offset behavior, chat failure independence and resource cleanup. All 18
-frontend tests and 8 dashboard tests pass, along with the frontend build/lint/type
-checks and Python lint/format checks for touched files.
+clock/offset behavior, chat failure independence and resource cleanup. The full
+CLI suite also passes, along with the frontend lint, type and build checks.
 
 Chromium validation exercised an actual local MP4, the real 509-message CLI
 export, pause, 2x playback, backwards seeks, timestamp search, sync adjustment,
-theater/Escape and a 390 px mobile viewport. The built page runs under the actual
-dashboard CSP without browser errors or external requests. Fonts are emitted as
-local files so small subsets do not violate `font-src 'self'`.
+theater/Escape and a 390 px mobile viewport. The built page runs under the
+player's Content-Security-Policy without browser errors or external requests.
+Fonts are emitted as local files so small subsets do not violate `font-src 'self'`.
 
 A second browser check indexed 100,000 messages in an 18.6 MB JSON in about 0.85
 seconds on the development machine, rendered a maximum of 80 messages, searched

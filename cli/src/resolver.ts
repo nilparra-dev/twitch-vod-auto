@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { mapWithConcurrency } from "./concurrency.js";
+import { fetchAllowedMedia, VOD_DOMAINS } from "./net/media.js";
 import { fetchVideoMetadata, GqlClient, TWITCH_WEB_CLIENT_ID } from "./twitch/gql.js";
 import {
   fetchSullyGnomeStreamTime,
@@ -20,31 +21,13 @@ import type {
   TrackerProvider,
 } from "./types.js";
 
+export { VOD_DOMAINS } from "./net/media.js";
+
 const DEFAULT_TIMEOUT_MS = 12_000;
 /** Seconds searched around a provided timestamp when every exact source fails. */
 export const DEFAULT_TIMESTAMP_WINDOW = 120;
 const TRACKER_CLOCK_TOLERANCE_SECONDS = 15 * 60;
 const WINDOW_CONCURRENCY = 24;
-
-export const VOD_DOMAINS = [
-  "https://ds0h3roq6wcgc.cloudfront.net",
-  "https://d2nvs31859zcd8.cloudfront.net",
-  "https://d2aba1wr3818hz.cloudfront.net",
-  "https://d3c27h4odz752x.cloudfront.net",
-  "https://dgeft87wbj63p.cloudfront.net",
-  "https://d1m7jfoe9zdc1j.cloudfront.net",
-  "https://d3vd9lfkzbru3h.cloudfront.net",
-  "https://ddacn6pr5v0tl.cloudfront.net",
-  "https://d3aqoihi2n8ty8.cloudfront.net",
-  "https://d3fi1amfgojobc.cloudfront.net",
-  "https://d2vi6trrdongqn.cloudfront.net",
-  "https://d3stzm2eumvgb4.cloudfront.net",
-  // Verified aliases of the ds0h/d2nv distribution. They only help when a
-  // network can reach twitch.tv but not the CloudFront hostname.
-  "https://vod-secure.twitch.tv",
-  "https://vod-metro.twitch.tv",
-  "https://vod-pop-secure.twitch.tv",
-] as const;
 
 /** Qualities probed, in order, when looking for a VOD on a distribution. */
 const QUALITY_PROBE_ORDER = ["chunked", "720p60", "480p30", "audio_only"] as const;
@@ -212,13 +195,29 @@ async function request(url: string, init: RequestInit, ctx: ProbeContext): Promi
 }
 
 /**
- * Probe one media URL. HEAD is the cheap default; GET with a byte range covers
- * servers that reject HEAD. A 403 or 404 is a definitive negative: Twitch's
- * CloudFront returns 403 for paths that are not stored on that distribution.
+ * Probe one media URL with the same redirect validation as playback: a redirect
+ * is followed only when the destination is still an allowed Twitch media host.
+ * HEAD is the cheap default; GET with a byte range covers servers that reject
+ * HEAD. A 403 or 404 is a definitive negative: Twitch's CloudFront returns 403
+ * for paths that are not stored on that distribution.
  */
+async function mediaProbe(
+  url: string,
+  init: { method?: string; headers?: Record<string, string> },
+  ctx: ProbeContext,
+): Promise<Response> {
+  const timeout = AbortSignal.timeout(ctx.timeoutMs);
+  const signal = ctx.signal ? AbortSignal.any([timeout, ctx.signal]) : timeout;
+  return fetchAllowedMedia(url, {
+    fetch: ctx.fetch,
+    signal,
+    ...init,
+  });
+}
+
 async function urlExists(url: string, ctx: ProbeContext): Promise<boolean> {
   try {
-    const response = await request(url, { method: "HEAD", redirect: "follow" }, ctx);
+    const response = await mediaProbe(url, { method: "HEAD" }, ctx);
     if (response.ok) return true;
     if (response.status !== 405 && response.status !== 501) return false;
     await response.body?.cancel();
@@ -226,7 +225,7 @@ async function urlExists(url: string, ctx: ProbeContext): Promise<boolean> {
     ctx.signal?.throwIfAborted();
   }
   try {
-    const response = await request(url, { headers: { Range: "bytes=0-0" }, redirect: "follow" }, ctx);
+    const response = await mediaProbe(url, { headers: { Range: "bytes=0-0" } }, ctx);
     const ok = response.ok;
     await response.body?.cancel();
     return ok;
@@ -489,7 +488,9 @@ async function resolvePublicManifest(videoId: string, ctx: ProbeContext): Promis
     token: value,
   });
   const masterUrl = `https://usher.ttvnw.net/vod/${videoId}.m3u8?${params}`;
-  const manifestResponse = await request(masterUrl, {}, ctx);
+  // The manifest request uses the media allowlist too: a redirect must not
+  // leave Twitch's media hosts.
+  const manifestResponse = await mediaProbe(masterUrl, {}, ctx);
   if (!manifestResponse.ok) throw new ResolveError(`The manifest returned HTTP ${manifestResponse.status}.`, "HTTP_ERROR");
   const formats = parseMasterManifest(await manifestResponse.text());
   if (formats.length === 0) throw new ResolveError("The manifest contains no playable qualities.", "NOT_FOUND");

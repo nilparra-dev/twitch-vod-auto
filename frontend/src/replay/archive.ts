@@ -197,10 +197,28 @@ export async function searchArchive(
   const text = query.trim().toLocaleLowerCase();
   if (!text) return [];
   const matches: ChatMessage[] = [];
-  for (let start = 0; start < index.entries.length && matches.length < 100; start += 80) {
+  const batchSize = 80;
+  // Read batches in order but keep a few range reads in flight, so a remote
+  // archive is not scanned one HTTP request at a time.
+  const lookahead = 4;
+  const pending: Array<Promise<ChatMessage[]>> = [];
+  let next = 0;
+  const fill = () => {
+    while (pending.length < lookahead && next < index.entries.length) {
+      const start = next;
+      next += batchSize;
+      const end = Math.min(start + batchSize, index.entries.length);
+      pending.push(readEntries(index, start, end));
+    }
+  };
+  fill();
+  while (pending.length > 0 && matches.length < 100) {
     if (cancelled()) return [];
-    const messages = await readEntries(index, start, Math.min(start + 80, index.entries.length));
-    for (const message of messages) {
+    const batch = pending.shift();
+    fill();
+    if (!batch) break;
+    for (const message of await batch) {
+      if (cancelled()) return [];
       if (
         `${message.user?.displayName ?? ""} ${message.user?.login ?? ""} ${message.text}`
           .toLocaleLowerCase()

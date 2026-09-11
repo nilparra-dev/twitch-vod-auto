@@ -70,6 +70,66 @@ https://video.example/720p60/index-dvr.m3u8`;
   });
 });
 
+describe("public VOD resolution", () => {
+  it("uses the playback token and the usher manifest", async () => {
+    const requests = [];
+    const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60.000,VIDEO="chunked"
+https://video-weaver.test.ttvnw.net/123/chunked/index-dvr.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,FRAME-RATE=60.000,VIDEO="720p60"
+https://video-weaver.test.ttvnw.net/123/720p60/index-dvr.m3u8`;
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://gql.twitch.tv/gql") {
+        return new Response(
+          JSON.stringify({ data: { videoPlaybackAccessToken: { value: "token", signature: "sig" } } }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://usher.ttvnw.net/vod/2434567890.m3u8")) {
+        return new Response(master, { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    };
+    const result = await resolveM3U8("https://www.twitch.tv/videos/2434567890", { fetch: fetchImpl });
+    assert.equal(result.kind, "public");
+    assert.equal(result.videoId, "2434567890");
+    assert.deepEqual(
+      result.formats.map((format) => format.id),
+      ["chunked", "720p60"],
+    );
+    assert.match(requests[1], /[?&]sig=sig(&|$)/);
+    assert.match(requests[1], /[?&]token=token(&|$)/);
+  });
+  it("rejects a manifest redirect outside the media allowlist", async () => {
+    const requested = [];
+    const fetchImpl = async (input, init) => {
+      const url = String(input);
+      requested.push(url);
+      if (url === "https://gql.twitch.tv/gql") {
+        const body = JSON.parse(init.body);
+        if (body.operationName === "PlaybackAccessToken_Template") {
+          return new Response(
+            JSON.stringify({ data: { videoPlaybackAccessToken: { value: "token", signature: "sig" } } }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ data: { video: null } }), { status: 200 });
+      }
+      if (url.startsWith("https://usher.ttvnw.net/vod/2434567890.m3u8")) {
+        return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private" } });
+      }
+      return new Response("", { status: 404 });
+    };
+    await assert.rejects(
+      resolveM3U8("https://www.twitch.tv/videos/2434567890", { fetch: fetchImpl }),
+      /outside Twitch/,
+    );
+    assert.equal(requested.some((url) => url.includes("127.0.0.1")), false);
+  });
+});
+
 describe("hidden VOD resolution chain", () => {
   const channel = "somechannel";
   const streamId = "999999999999";
@@ -165,6 +225,48 @@ describe("hidden VOD resolution chain", () => {
     assert.equal(result.kind, "hidden");
     assert.equal(result.timestamp?.used, exact);
     assert.equal(result.timestamp?.source, "twitracker");
+  });
+
+  it("follows a probe redirect only to another allowed media host", async () => {
+    const timestamp = 3000;
+    const from = "https://d2nvs31859zcd8.cloudfront.net";
+    const to = "https://d2vi6trrdongqn.cloudfront.net";
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url.startsWith(from) && url.includes(`_${channel}_${streamId}_${timestamp}/chunked/index-dvr.m3u8`)) {
+        return new Response(null, { status: 302, headers: { location: url.replace(from, to) } });
+      }
+      if (url.startsWith(to) && url.includes(`_${channel}_${streamId}_${timestamp}/chunked/index-dvr.m3u8`)) {
+        return cdnResponse(200);
+      }
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    const result = await resolveM3U8(`video:${channel}_${streamId}_${timestamp}`, {
+      fetch: fetchImpl,
+      timestampWindow: 0,
+    });
+    assert.equal(result.kind, "hidden");
+    assert.ok(result.formats.some((format) => format.id === "Source"));
+  });
+
+  it("rejects a probe redirect that leaves Twitch's media hosts", async () => {
+    const timestamp = 4000;
+    const domain = "https://d2nvs31859zcd8.cloudfront.net";
+    const requested = [];
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.startsWith(domain))
+        return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private" } });
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    await assert.rejects(
+      resolveM3U8(`video:${channel}_${streamId}_${timestamp}`, { fetch: fetchImpl, timestampWindow: 0 }),
+      (error) => error instanceof ResolveError && error.code === "NOT_FOUND",
+    );
+    assert.equal(requested.some((url) => url.includes("127.0.0.1")), false);
   });
 
   it("reports a clear error when no timestamp source answers", async () => {
