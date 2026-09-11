@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { array, record, string, number, nullableString } from "../../../cli/src/chat/model";
-import type { PlayerSession, ChatStatus } from "../../../cli/src/watch/types";
-export type { PlayerSession } from "../../../cli/src/watch/types";
+import { array, record, string, number, nullableString } from "@chat-protocol";
+import type { PlayerSession, ChatStatus } from "@chat-protocol";
+export type { PlayerSession } from "@chat-protocol";
 
 export interface PlayerBridge {
   session: PlayerSession;

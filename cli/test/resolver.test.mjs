@@ -131,6 +131,8 @@ https://video-weaver.test.ttvnw.net/123/720p60/index-dvr.m3u8`;
 });
 
 describe("hidden VOD resolution chain", () => {
+  // Probe results are memoized per media URL. Give each test a distinct channel
+  // or timestamp so a cached result cannot leak between cases.
   const channel = "somechannel";
   const streamId = "999999999999";
 
@@ -138,7 +140,7 @@ describe("hidden VOD resolution chain", () => {
   const isCdn = (url) => url.includes(".cloudfront.net") || url.includes(".twitch.tv") || url.includes("ttvnw.net");
 
   it("finds a VOD whose Source quality is missing by probing other qualities", async () => {
-    const timestamp = 2000;
+    const timestamp = 9000;
     const domain = "https://d2vi6trrdongqn.cloudfront.net";
     const fetchImpl = async (input) => {
       const url = String(input);
@@ -267,6 +269,68 @@ describe("hidden VOD resolution chain", () => {
       (error) => error instanceof ResolveError && error.code === "NOT_FOUND",
     );
     assert.equal(requested.some((url) => url.includes("127.0.0.1")), false);
+  });
+
+  it("reuses cached probe results on repeated resolution attempts", async () => {
+    const cachedChannel = "cachechannel";
+    const cachedStreamId = "111111111111";
+    const timestamp = 5000;
+    let cdnRequests = 0;
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (isCdn(url)) {
+        cdnRequests += 1;
+        return cdnResponse(403);
+      }
+      return cdnResponse(404);
+    };
+    await assert.rejects(
+      resolveM3U8(`video:${cachedChannel}_${cachedStreamId}_${timestamp}`, {
+        fetch: fetchImpl,
+        timestampWindow: 0,
+      }),
+      (error) => error instanceof ResolveError && error.code === "NOT_FOUND",
+    );
+    const first = cdnRequests;
+    assert.ok(first > 0);
+    await assert.rejects(
+      resolveM3U8(`video:${cachedChannel}_${cachedStreamId}_${timestamp}`, {
+        fetch: fetchImpl,
+        timestampWindow: 0,
+      }),
+      (error) => error instanceof ResolveError && error.code === "NOT_FOUND",
+    );
+    assert.equal(cdnRequests - first, 0);
+  });
+
+  it("does not cache transient probe failures", async () => {
+    const transientChannel = "transientchannel";
+    const transientStreamId = "222222222222";
+    const timestamp = 6000;
+    const target = "https://d2nvs31859zcd8.cloudfront.net";
+    let transient = true;
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url.startsWith(target) && url.includes(`_${transientChannel}_${transientStreamId}_${timestamp}/chunked/index-dvr.m3u8`)) {
+        return cdnResponse(transient ? 500 : 200);
+      }
+      if (isCdn(url)) return cdnResponse(403);
+      return cdnResponse(404);
+    };
+    await assert.rejects(
+      resolveM3U8(`video:${transientChannel}_${transientStreamId}_${timestamp}`, {
+        fetch: fetchImpl,
+        timestampWindow: 0,
+      }),
+      (error) => error instanceof ResolveError && error.code === "NOT_FOUND",
+    );
+    transient = false;
+    const result = await resolveM3U8(`video:${transientChannel}_${transientStreamId}_${timestamp}`, {
+      fetch: fetchImpl,
+      timestampWindow: 0,
+    });
+    assert.equal(result.kind, "hidden");
+    assert.ok(result.formats.some((format) => format.id === "Source"));
   });
 
   it("reports a clear error when no timestamp source answers", async () => {

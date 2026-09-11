@@ -83,6 +83,43 @@ interface ProbeContext {
 /** Domains that recently served a channel, most recent first. */
 const domainMemory = new Map<string, string[]>();
 
+/** Seconds a probe result is reused before asking the CDN again. */
+const PROBE_CACHE_TTL_MS = 10 * 60_000;
+const PROBE_CACHE_MAX_ENTRIES = 4096;
+
+interface ProbeCacheEntry {
+  available: boolean;
+  expiresAt: number;
+}
+
+/**
+ * Recent probe results keyed by media URL, bounded and short-lived. A hidden
+ * path appears only once its media exists; the TTL keeps a stream that is still
+ * processing from being cached as absent for long.
+ */
+const probeCache = new Map<string, ProbeCacheEntry>();
+
+function readProbeCache(url: string, now: number): boolean | null {
+  const entry = probeCache.get(url);
+  if (!entry) return null;
+  if (entry.expiresAt <= now) {
+    probeCache.delete(url);
+    return null;
+  }
+  // Refresh insertion order so the least recently used entry is evicted first.
+  probeCache.delete(url);
+  probeCache.set(url, entry);
+  return entry.available;
+}
+
+function writeProbeCache(url: string, available: boolean, now: number): void {
+  if (probeCache.size >= PROBE_CACHE_MAX_ENTRIES) {
+    const oldest = probeCache.keys().next().value;
+    if (oldest !== undefined) probeCache.delete(oldest);
+  }
+  probeCache.set(url, { available, expiresAt: now + PROBE_CACHE_TTL_MS });
+}
+
 function rememberDomain(channel: string, domain: string): void {
   const key = channel.toLowerCase();
   const remembered = domainMemory.get(key) ?? [];
@@ -215,24 +252,46 @@ async function mediaProbe(
   });
 }
 
-async function urlExists(url: string, ctx: ProbeContext): Promise<boolean> {
+/** A 4xx response states that the path is absent; 429 and 5xx may be transient. */
+function isDefinitiveNegative(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 429;
+}
+
+/**
+ * Probe one media URL. Returns null when the CDN did not answer definitively,
+ * so transient failures are not cached as unavailable.
+ */
+async function probeUrl(url: string, ctx: ProbeContext): Promise<boolean | null> {
   try {
     const response = await mediaProbe(url, { method: "HEAD" }, ctx);
     if (response.ok) return true;
-    if (response.status !== 405 && response.status !== 501) return false;
+    const status = response.status;
     await response.body?.cancel();
+    if (status !== 405 && status !== 501) return isDefinitiveNegative(status) ? false : null;
   } catch (error) {
     ctx.signal?.throwIfAborted();
+    return null;
   }
   try {
     const response = await mediaProbe(url, { headers: { Range: "bytes=0-0" } }, ctx);
+    const status = response.status;
     const ok = response.ok;
     await response.body?.cancel();
-    return ok;
+    if (ok) return true;
+    return isDefinitiveNegative(status) ? false : null;
   } catch (error) {
     ctx.signal?.throwIfAborted();
-    return false;
+    return null;
   }
+}
+
+async function urlExists(url: string, ctx: ProbeContext): Promise<boolean> {
+  const now = Date.now();
+  const cached = readProbeCache(url, now);
+  if (cached !== null) return cached;
+  const available = await probeUrl(url, ctx);
+  if (available !== null) writeProbeCache(url, available, now);
+  return available ?? false;
 }
 
 interface DomainMatch {

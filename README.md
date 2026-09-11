@@ -196,7 +196,9 @@ Tracker sites may also block automated requests. When exact sources are
 unavailable, the resolver falls back to a bounded second-by-second search
 around the provided timestamp (`--timestamp-window`, default 120). A canonical
 `video:...` target therefore works with an approximate start time close to the
-real one.
+real one. Probe results are memoized per media URL for ten minutes within the
+same process, so `list --probe` and repeated programmatic calls do not re-ask
+the same missing paths; transient CDN failures are never cached.
 
 ## Downloading VODs
 
@@ -257,12 +259,15 @@ exports. Emote image downloads are planned in
 [the archive/player roadmap](https://github.com/nilparra-dev/twitch-vod-auto/blob/main/docs/ARCHIVE_PLAYER_PLAN.md).
 The JSON format is our versioned format, not a TwitchDownloader-compatible export.
 
-Downloads save committed pages in `downloads/chat.json.archive/pages.jsonl`.
-Repeat the same command and output path after a network failure or Ctrl+C to
-resume. Keep the `.archive` directory until you have a finished JSON. A truncated
-final journal line is discarded on recovery; corrupt committed pages cause an
-error. Messages are streamed by page, while message IDs are held in memory for
-deduplication. Existing output files are never overwritten.
+Downloads save committed pages in `downloads/chat.json.archive/pages.jsonl` and
+a bounded resume checkpoint in `checkpoint.json`. Repeat the same command and
+output path after a network failure or Ctrl+C to resume; the checkpoint lets a
+large archive continue without re-reading committed pages. Keep the `.archive`
+directory until you have a finished JSON. A truncated final journal line is
+discarded on recovery; corrupt committed pages cause an error. Messages are
+streamed by page and only recent message IDs are kept for deduplication, so data
+that repeats far in the past fails as out of order instead of being silently
+merged. Existing output files are never overwritten.
 
 The archive uses an exclusive lock to prevent concurrent writers. A lock left by
 a crashed process is detected by PID and hostname and recovered automatically; a

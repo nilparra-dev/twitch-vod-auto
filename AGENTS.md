@@ -32,6 +32,9 @@ the same principles from memory and say so.
   bounded concurrency where the code touches the network or the filesystem.
 - Preserve compatibility for serialized state and existing command output
   unless the change explicitly breaks it.
+- The persisted chat contract lives in `cli/src/protocol.ts` and is shared with
+  the player through the `@chat-protocol` alias. Keep it dependency-free and
+  treat any change to it as a versioned contract change.
 - Write comments and documentation in English, in the repository's tone.
   Explain decisions, constraints and invariants. Do not narrate the session.
 

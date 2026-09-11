@@ -354,6 +354,134 @@ describe("resumable chat archive", () => {
     assert.equal(JSON.parse(await readFile(output, "utf8")).messages.length, 1);
   });
 
+  it("resumes from the checkpoint without re-reading committed pages", async () => {
+    const output = await outputPath();
+    const offline = async ({ cursor }) => {
+      if (cursor === null) return { messages: [a], nextCursor: "one" };
+      if (cursor === "one") return { messages: [b], nextCursor: "two" };
+      throw new ChatError("NETWORK_ERROR", "offline");
+    };
+    await assert.rejects(
+      downloadChat({ vodId: "123", output, source: { video: async () => metadata, page: offline } }),
+      errorCode("NETWORK_ERROR"),
+    );
+    const checkpoint = JSON.parse(await readFile(join(`${output}.archive`, "checkpoint.json"), "utf8"));
+    assert.equal(checkpoint.pageCount, 2);
+    assert.equal(checkpoint.messageCount, 2);
+    assert.equal(checkpoint.cursor, "two");
+    assert.equal(checkpoint.complete, false);
+    assert.deepEqual(checkpoint.recentIds, [a.id, b.id]);
+
+    const requested = [];
+    const result = await downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        requested.push(cursor);
+        return { messages: [c], nextCursor: null };
+      },
+    } });
+    assert.deepEqual(requested, ["two"]);
+    assert.equal(result.messageCount, 3);
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")).messages, [a, b, c]);
+  });
+
+  it("recovers pages committed after the checkpoint", async () => {
+    const output = await outputPath();
+    await assert.rejects(downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        if (cursor === null) return { messages: [a], nextCursor: "one" };
+        if (cursor === "one") return { messages: [b], nextCursor: "two" };
+        throw new ChatError("NETWORK_ERROR", "offline");
+      },
+    } }), errorCode("NETWORK_ERROR"));
+    const directory = `${output}.archive`;
+    const journalText = await readFile(join(directory, "pages.jsonl"), "utf8");
+    const firstLine = journalText.slice(0, journalText.indexOf("\n") + 1);
+    assert.ok(journalText.length > firstLine.length);
+    // Simulate a crash after page two was fsynced but before its checkpoint write.
+    const checkpoint = JSON.parse(await readFile(join(directory, "checkpoint.json"), "utf8"));
+    await writeFile(join(directory, "checkpoint.json"), JSON.stringify({
+      ...checkpoint,
+      journalBytes: Buffer.byteLength(firstLine),
+      pageCount: 1,
+      messageCount: 1,
+      cursor: "one",
+      lastOffsetSeconds: a.offsetSeconds,
+      recentIds: [a.id],
+    }));
+
+    const requested = [];
+    const result = await downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        requested.push(cursor);
+        return { messages: [c], nextCursor: null };
+      },
+    } });
+    assert.deepEqual(requested, ["two"]);
+    assert.equal(result.messageCount, 3);
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")).messages, [a, b, c]);
+  });
+
+  it("falls back to a full scan when the checkpoint is missing", async () => {
+    const output = await outputPath();
+    await assert.rejects(downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        if (cursor === null) return { messages: [a], nextCursor: "one" };
+        if (cursor === "one") return { messages: [b], nextCursor: "two" };
+        throw new ChatError("NETWORK_ERROR", "offline");
+      },
+    } }), errorCode("NETWORK_ERROR"));
+    const directory = `${output}.archive`;
+    await rm(join(directory, "checkpoint.json"));
+
+    const requested = [];
+    const result = await downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        requested.push(cursor);
+        return { messages: [c], nextCursor: null };
+      },
+    } });
+    assert.deepEqual(requested, ["two"]);
+    assert.equal(result.messageCount, 3);
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")).messages, [a, b, c]);
+    // The scan stores a checkpoint so the next resume is incremental.
+    const checkpoint = JSON.parse(await readFile(join(directory, "checkpoint.json"), "utf8"));
+    assert.equal(checkpoint.pageCount, 3);
+    assert.equal(checkpoint.complete, true);
+  });
+
+  it("ignores a corrupt checkpoint and rebuilds it from the journal", async () => {
+    const output = await outputPath();
+    await assert.rejects(downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        if (cursor === null) return { messages: [a], nextCursor: "one" };
+        throw new ChatError("NETWORK_ERROR", "offline");
+      },
+    } }), errorCode("NETWORK_ERROR"));
+    const directory = `${output}.archive`;
+    await writeFile(join(directory, "checkpoint.json"), "{not json");
+
+    const requested = [];
+    const result = await downloadChat({ vodId: "123", output, source: {
+      video: async () => metadata,
+      page: async ({ cursor }) => {
+        requested.push(cursor);
+        return { messages: [c], nextCursor: null };
+      },
+    } });
+    assert.deepEqual(requested, ["one"]);
+    assert.equal(result.messageCount, 2);
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")).messages, [a, c]);
+    const checkpoint = JSON.parse(await readFile(join(directory, "checkpoint.json"), "utf8"));
+    assert.equal(checkpoint.pageCount, 2);
+    assert.equal(checkpoint.complete, true);
+  });
+
   it("does not discard corruption in a committed page", async () => {
     const output = await outputPath();
     await assert.rejects(downloadChat({ vodId: "123", output, source: {
