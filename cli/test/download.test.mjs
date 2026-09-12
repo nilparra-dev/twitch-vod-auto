@@ -163,7 +163,7 @@ a.m4s
     await writeFile(`${output}.part`, "AB");
     await writeFile(
       `${output}.part.json`,
-      JSON.stringify({ fingerprint: fingerprintPlaylist(playlist), segments: 2, bytes: 2 }),
+      JSON.stringify({ fingerprint: fingerprintPlaylist(playlist), segments: 2, bytes: 2, timestampRepair: 2 }),
     );
     const requested = [];
     const fakeFetch = async (url) => {
@@ -239,7 +239,7 @@ a.m4s
     }|${playlist.segments.at(-1).uri}`;
     await writeFile(
       `${output}.part.json`,
-      JSON.stringify({ fingerprint: legacyFingerprint, segments: 2, bytes: 2 }),
+      JSON.stringify({ fingerprint: legacyFingerprint, segments: 2, bytes: 2, timestampRepair: 2 }),
     );
     const requested = [];
     const fakeFetch = async (url) => {
@@ -269,12 +269,40 @@ a.m4s
     const directory = await workdir();
     const output = join(directory, "out.ts");
     await writeFile(`${output}.part`, "AB");
-    await writeFile(`${output}.part.json`, JSON.stringify({ fingerprint: "other", segments: 2, bytes: 2 }));
+    await writeFile(
+      `${output}.part.json`,
+      JSON.stringify({ fingerprint: "other", segments: 2, bytes: 2, timestampRepair: 2 }),
+    );
     const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
     await assert.rejects(
       downloadPlaylist({ playlist, output, fetch: async () => new Response("A", { status: 200 }) }),
       (error) => error instanceof DownloadError && error.code === "STATE_MISMATCH",
     );
+  });
+
+  it("restarts a partial download written before timestamp repair", async () => {
+    const directory = await workdir();
+    const output = join(directory, "out.ts");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    await writeFile(`${output}.part`, "AB");
+    await writeFile(
+      `${output}.part.json`,
+      JSON.stringify({ fingerprint: fingerprintPlaylist(playlist), segments: 2, bytes: 2 }),
+    );
+    const requested = [];
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      requested.push(key);
+      if (key === "a.ts") return new Response("A", { status: 200 });
+      if (key === "b.ts") return new Response("B", { status: 200 });
+      return new Response("", { status: 404 });
+    };
+
+    const result = await downloadPlaylist({ playlist, output, fetch: fakeFetch, retryDelayMs: 1 });
+
+    assert.equal(result.resumedFrom, 0);
+    assert.deepEqual(requested.sort(), ["a.ts", "b.ts"]);
+    assert.equal(await readFile(output, "utf8"), "AB");
   });
 });
 

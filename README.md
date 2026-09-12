@@ -214,6 +214,10 @@ npx twitch-vod-m3u8@beta list xqc --download 1
 
 Segments are fetched in parallel and written in order, so an interrupted
 download keeps a `.part` file and resumes when you run the same command again.
+Some encoders leave frames with the MPEG-TS "no timestamp" sentinel, in the
+PES header (PTS/DTS) or in the PCR; the downloader rewrites both in place,
+because players such as VLC take the values literally and jump the media clock
+to ~26.5 hours.
 Output defaults to `downloads/<id>.ts` in the current directory; existing files
 and partial downloads are never overwritten without `--force`. `-o` sets an
 exact file path, while `--output-dir` sets only the folder and keeps the

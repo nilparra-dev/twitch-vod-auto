@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { allowedMediaUrl, fetchMedia } from "../net/media.js";
 import type { MediaPlaylist } from "./playlist.js";
+import { createTimestampRepair } from "./timestamps.js";
 
 export class DownloadError extends Error {
   constructor(
@@ -106,10 +107,18 @@ async function exists(path: string): Promise<boolean> {
   );
 }
 
-async function readState(path: string): Promise<ResumeState | null> {
+/**
+ * Result of reading the resume sidecar. A state written before timestamp
+ * repair, or by the earlier PTS-only repair, may have left unset timestamps in
+ * the partial file, so it cannot be completed into a playable download and is
+ * reported as legacy.
+ */
+type StoredState = { kind: "ok"; state: ResumeState } | { kind: "legacy" } | { kind: "none" };
+
+async function readState(path: string): Promise<StoredState> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    if (typeof parsed !== "object" || parsed === null) return null;
+    if (typeof parsed !== "object" || parsed === null) return { kind: "none" };
     const record = parsed as Record<string, unknown>;
     if (
       typeof record.fingerprint === "string" &&
@@ -118,17 +127,18 @@ async function readState(path: string): Promise<ResumeState | null> {
       typeof record.bytes === "number" &&
       Number.isFinite(record.bytes)
     ) {
-      return { fingerprint: record.fingerprint, segments: record.segments, bytes: record.bytes };
+      if (record.timestampRepair !== 2) return { kind: "legacy" };
+      return { kind: "ok", state: { fingerprint: record.fingerprint, segments: record.segments, bytes: record.bytes } };
     }
   } catch {
     /* Missing or corrupt state means starting over. */
   }
-  return null;
+  return { kind: "none" };
 }
 
 async function writeState(path: string, state: ResumeState): Promise<void> {
   const temporary = `${path}.tmp`;
-  await writeFile(temporary, JSON.stringify(state));
+  await writeFile(temporary, JSON.stringify({ ...state, timestampRepair: 2 }));
   await rename(temporary, path);
 }
 
@@ -157,7 +167,14 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
   let startIndex = 0;
   let bytes = 0;
   let resumed = false;
-  const state = await readState(statePath);
+  const stored = await readState(statePath);
+  if (stored.kind === "legacy") {
+    // Older partials can contain unset PTS/DTS values, so completing them
+    // would publish a file that still breaks players. Start over instead.
+    await rm(part, { force: true });
+    await rm(statePath, { force: true });
+  }
+  const state = stored.kind === "ok" ? stored.state : null;
   if (state) {
     if (state.fingerprint !== expected && state.fingerprint !== legacyExpected) {
       throw new DownloadError(
@@ -264,10 +281,12 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
 
   const pending = new Map<number, Promise<Buffer>>();
   const file = await open(part, resumed ? "a+" : "w");
+  const repairTimestamps = createTimestampRepair();
   let written = startIndex;
   try {
     if (!resumed && playlist.initSegment) {
       const init = await fetchSegment(playlist.initSegment, 0);
+      repairTimestamps.repair(init);
       await file.writeFile(init);
       bytes += init.length;
     }
@@ -285,6 +304,7 @@ export async function downloadPlaylist(options: DownloadOptions): Promise<Downlo
       if (!buffer) throw new DownloadError("Internal downloader error.", "INTERNAL");
       const chunk = await buffer;
       pending.delete(written);
+      repairTimestamps.repair(chunk);
       await file.writeFile(chunk);
       bytes += chunk.length;
       written += 1;
