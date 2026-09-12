@@ -223,8 +223,10 @@ and partial downloads are never overwritten without `--force`. `-o` sets an
 exact file path, while `--output-dir` sets only the folder and keeps the
 generated name (`<id>.mp4` with `--remux`); the two options cannot be combined.
 A file ending in `.mp4` or `--remux` converts to
-MP4 with ffmpeg (`-c copy`, no re-encode); without ffmpeg the `.ts` file plays
-in VLC, MPV and most editors. Every segment URL and redirect must stay on
+MP4 with ffmpeg (`-c copy`, no re-encode, `+faststart`), checks the result
+duration with ffprobe, and accepts `--ffmpeg-path <file>` or the
+`TWITCH_VOD_M3U8_FFMPEG` environment variable; without ffmpeg the `.ts` file
+plays in VLC, MPV and most editors. Every segment URL and redirect must stay on
 Twitch's media domains, and an oversized segment aborts instead of filling the
 disk.
 

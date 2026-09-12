@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { stderr, stdout } from "node:process";
 
@@ -7,6 +6,13 @@ import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, ResolveError, resolveM3U8 } fro
 import { fetchMedia } from "../net/media.js";
 import type { ResolveResult } from "../types.js";
 import { assertAllowedMediaUrl, DownloadError, downloadPlaylist } from "./fetcher.js";
+import {
+  FfmpegError,
+  findFfmpeg,
+  probeDuration,
+  remuxToMp4,
+  type FfmpegTools,
+} from "./ffmpeg.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
 
 export const DOWNLOAD_HELP = `Download a Twitch VOD as a single file, without ffmpeg by default.
@@ -25,6 +31,7 @@ Options:
   --concurrency <n>         Parallel segment downloads (default 8, max 32)
   --force                   Overwrite an existing output or partial download
   --remux                   Convert to MP4 with ffmpeg (-c copy, no re-encode)
+  --ffmpeg-path <file>      ffmpeg binary to use (default: PATH or $TWITCH_VOD_M3U8_FFMPEG)
   --keep-ts                 Keep the intermediate .ts file after --remux
   --timestamp-window <secs> Search window for approximate timestamps (default ${DEFAULT_TIMESTAMP_WINDOW})
   --json                    Print structured JSON
@@ -45,6 +52,7 @@ interface DownloadCliOptions {
   output?: string;
   outputDir?: string;
   channel?: string;
+  ffmpegPath?: string;
   quality: string;
   concurrency: number;
   force: boolean;
@@ -73,13 +81,15 @@ export function parseDownloadArgs(args: string[]): DownloadCliOptions {
       arg === "--output-dir" ||
       arg === "-q" ||
       arg === "--quality" ||
-      arg === "--channel"
+      arg === "--channel" ||
+      arg === "--ffmpeg-path"
     ) {
       const value = args[index + 1];
       if (!value || value.startsWith("-")) throw new ResolveError(`${arg} requires a value.`, "INVALID_ARGUMENT");
       if (arg === "-o" || arg === "--output") options.output = value;
       else if (arg === "--output-dir") options.outputDir = value;
       else if (arg === "--channel") options.channel = value;
+      else if (arg === "--ffmpeg-path") options.ffmpegPath = value;
       else options.quality = value;
       index += 1;
     } else if (arg === "--concurrency") {
@@ -196,30 +206,16 @@ function defaultFileName(result: ResolveResult, mp4: boolean): string {
   return `${result.videoId}${extension}`;
 }
 
-async function remuxToMp4(input: string, output: string): Promise<void> {
-  const temporary = `${output}.tmp.mp4`;
-  const result = spawnSync(
-    "ffmpeg",
-    ["-hide_banner", "-loglevel", "error", "-y", "-i", input, "-c", "copy", temporary],
-    { encoding: "utf8" },
+function resolveFfmpegTools(explicit?: string): FfmpegTools {
+  const tools = findFfmpeg(explicit);
+  if (tools) return tools;
+  throw new ResolveError(
+    "ffmpeg was not found. Install it or pass --ffmpeg-path <file>.\n" +
+      "  Windows: winget install --id Gyan.FFmpeg -e\n" +
+      "  macOS:   brew install ffmpeg\n" +
+      "  Linux:   sudo apt install ffmpeg",
+    "FFMPEG_MISSING",
   );
-  if (result.status !== 0) {
-    await rm(temporary, { force: true });
-    const detail = (result.stderr ?? "").trim().split(/\r?\n/).slice(-3).join(" ");
-    throw new ResolveError(`ffmpeg could not remux the file${detail ? `: ${detail}` : "."}`, "REMUX_FAILED");
-  }
-  await rm(output, { force: true });
-  await rename(temporary, output);
-}
-
-function assertFfmpeg(): void {
-  const probe = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" });
-  if (probe.error || probe.status !== 0) {
-    throw new ResolveError(
-      "ffmpeg was not found. Install ffmpeg or download as .ts (drop --remux).",
-      "FFMPEG_MISSING",
-    );
-  }
 }
 
 export async function downloadCommand(args: string[]): Promise<void> {
@@ -236,6 +232,7 @@ export async function downloadCommand(args: string[]): Promise<void> {
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
+  let phase: "download" | "remux" = "download";
   try {
     const started = Date.now();
     const explicitOutput = options.output ? resolve(options.output) : null;
@@ -245,7 +242,7 @@ export async function downloadCommand(args: string[]): Promise<void> {
       throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
     }
     // Fail before downloading gigabytes when ffmpeg is required but missing.
-    if (remux) assertFfmpeg();
+    const tools = remux ? resolveFfmpegTools(options.ffmpegPath) : null;
     const result = await resolveM3U8(options.target, {
       timestampWindow: options.timestampWindow,
       signal: controller.signal,
@@ -294,11 +291,42 @@ export async function downloadCommand(args: string[]): Promise<void> {
 
     let finalPath = tsPath;
     let remuxed = false;
-    if (remux) {
-      await remuxToMp4(tsPath, requested);
+    let verified: boolean | null = null;
+    if (remux && tools) {
+      phase = "remux";
+      if (stderr.isTTY) stderr.write(`Remuxing to ${requested} (stream copy)...\n`);
+      let lastRemuxLine = 0;
+      await remuxToMp4({
+        tools,
+        input: tsPath,
+        output: requested,
+        signal: controller.signal,
+        durationSeconds: playlist.totalDurationSeconds,
+        onProgress: (progress) => {
+          if (!stderr.isTTY) return;
+          const now = Date.now();
+          if (now - lastRemuxLine < 1000 && progress.percent !== 100) return;
+          lastRemuxLine = now;
+          const size = progress.totalSizeBytes === null ? "" : ` · ${(progress.totalSizeBytes / 1048576).toFixed(0)} MB`;
+          stderr.write(`\rRemuxing ${progress.percent ?? 0}%${size}${progress.speed ? ` · ${progress.speed}` : ""}`);
+        },
+      });
+      if (stderr.isTTY) stderr.write("\n");
       finalPath = requested;
       remuxed = true;
       if (!options.keepTs) await rm(tsPath, { force: true });
+      // The playlist duration is the reference; a mismatch means the remux
+      // dropped or added media, so surface it instead of reporting success.
+      const expectedSeconds = playlist.totalDurationSeconds;
+      const actualSeconds = tools.ffprobe ? probeDuration(tools.ffprobe, requested) : null;
+      if (actualSeconds !== null) {
+        verified = Math.abs(actualSeconds - expectedSeconds) <= Math.max(2, expectedSeconds * 0.01);
+        if (!verified && stderr.isTTY) {
+          stderr.write(
+            `Warning: the remuxed duration (${actualSeconds.toFixed(1)}s) differs from the playlist (${expectedSeconds.toFixed(1)}s).\n`,
+          );
+        }
+      }
     }
     const seconds = (Date.now() - started) / 1000;
     if (options.json) {
@@ -311,6 +339,7 @@ export async function downloadCommand(args: string[]): Promise<void> {
           resumedFrom: downloaded.resumedFrom,
           seconds,
           remuxed,
+          verified,
         })}\n`,
       );
     } else {
@@ -325,11 +354,16 @@ export async function downloadCommand(args: string[]): Promise<void> {
   } catch (error) {
     const aborted = controller.signal.aborted;
     const message = aborted
-      ? "Download interrupted. Run the same command to resume."
+      ? phase === "remux"
+        ? "Remux interrupted. The downloaded .ts file was kept; run the command again with --force to retry."
+        : "Download interrupted. Run the same command to resume."
       : error instanceof Error
         ? error.message
         : String(error);
-    const code = error instanceof DownloadError || error instanceof ResolveError ? error.code : "ERROR";
+    const code =
+      error instanceof DownloadError || error instanceof ResolveError || error instanceof FfmpegError
+        ? error.code
+        : "ERROR";
     process.exitCode = aborted ? 130 : 1;
     if (options.json) stdout.write(`${JSON.stringify({ status: "error", error: { code, message } })}\n`);
     else stderr.write(`Error: ${message}\n`);
