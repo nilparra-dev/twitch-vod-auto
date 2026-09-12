@@ -16,6 +16,13 @@ import {
 } from "./ffmpeg.js";
 import { downloadHls } from "./hls.js";
 import { downloadHybrid } from "./hybrid.js";
+import {
+  estimatePlaylistBytes,
+  freeDiskBytes,
+  selectEngine,
+  type EngineChoice,
+  type EngineContext,
+} from "./engine.js";
 import { defaultCacheDir, provisionFfmpeg } from "./provision.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
 
@@ -33,7 +40,7 @@ Options:
   -q, --quality <name>      Quality to download; defaults to best
   --channel <channel>       Channel for a hidden stream ID
   --concurrency <n>         Parallel segment downloads (default 8, max 32)
-  --engine <name>           Download engine: native (default), ffmpeg or hybrid
+  --engine <name>           Download engine: auto (default), native, ffmpeg or hybrid
   --force                   Overwrite an existing output or partial download
   --remux                   Convert to MP4 with ffmpeg (-c copy, no re-encode)
   --ffmpeg-path <file>      ffmpeg binary to use (default: PATH or $TWITCH_VOD_M3U8_FFMPEG)
@@ -46,7 +53,9 @@ Options:
 Using an output path that ends in .mp4 implies --remux. --output and
 --output-dir cannot be combined. The ffmpeg engine downloads the playlist
 directly: it cannot resume, but it avoids the segment concatenation artifacts
-of the native engine.
+of the native engine. auto keeps the requested container and only chooses how
+an MP4 is built: hybrid by default, ffmpeg for fragmented or discontinued
+playlists and when disk is tight, and native when resuming or with --keep-ts.
 
 Examples:
   twitch-m3u8 download 2434567890
@@ -63,7 +72,7 @@ interface DownloadCliOptions {
   ffmpegPath?: string;
   installFfmpeg: boolean;
   quality: string;
-  engine: "native" | "ffmpeg" | "hybrid";
+  engine: "auto" | "native" | "ffmpeg" | "hybrid";
   concurrency: number;
   force: boolean;
   remux: boolean;
@@ -75,7 +84,7 @@ interface DownloadCliOptions {
 export function parseDownloadArgs(args: string[]): DownloadCliOptions {
   const options: DownloadCliOptions = {
     quality: "best",
-    engine: "native",
+    engine: "auto",
     concurrency: 8,
     force: false,
     remux: false,
@@ -114,8 +123,8 @@ export function parseDownloadArgs(args: string[]): DownloadCliOptions {
       index += 1;
     } else if (arg === "--engine") {
       const value = args[index + 1];
-      if (value !== "native" && value !== "ffmpeg" && value !== "hybrid") {
-        throw new ResolveError("--engine must be native, ffmpeg or hybrid.", "INVALID_ARGUMENT");
+      if (value !== "auto" && value !== "native" && value !== "ffmpeg" && value !== "hybrid") {
+        throw new ResolveError("--engine must be auto, native, ffmpeg or hybrid.", "INVALID_ARGUMENT");
       }
       options.engine = value;
       index += 1;
@@ -276,6 +285,68 @@ async function resolveFfmpegTools(options: DownloadCliOptions, signal: AbortSign
   );
 }
 
+interface ChooseEngineOptions {
+  playlist: MediaPlaylist;
+  requestedMp4: boolean;
+  keepTs: boolean;
+  ffmpeg: boolean;
+  installFfmpeg: boolean;
+  explicitOutput: string | null;
+  outputDirectory: string | null;
+  result: ResolveResult;
+  signal: AbortSignal;
+  /** Test seams for the size and disk probes. */
+  estimate?: ((options: { playlist: MediaPlaylist; signal: AbortSignal }) => Promise<number | null>) | undefined;
+  freeDisk?: ((path: string) => Promise<number | null>) | undefined;
+}
+
+/**
+ * Resolve `--engine auto` into a concrete engine. Resume state comes from the
+ * output candidates; the size and disk probes only run when the policy is
+ * considering the hybrid engine.
+ */
+export async function chooseEngine(
+  requested: DownloadCliOptions["engine"],
+  options: ChooseEngineOptions,
+): Promise<EngineChoice> {
+  if (requested !== "auto") {
+    return { engine: requested, reason: `selected with --engine ${requested}` };
+  }
+  const nativeCandidate = selectOutputPaths(options.result, {
+    output: options.explicitOutput,
+    outputDir: options.outputDirectory,
+    remux: options.requestedMp4,
+  });
+  const mp4Candidate = selectOutputPaths(options.result, {
+    output: options.explicitOutput,
+    outputDir: options.outputDirectory,
+    remux: true,
+  });
+  const context: EngineContext = {
+    requested: "auto",
+    requestedMp4: options.requestedMp4,
+    keepTs: options.keepTs,
+    ffmpeg: options.ffmpeg,
+    installFfmpeg: options.installFfmpeg,
+    initSegment: options.playlist.initSegment !== null,
+    discontinuities: options.playlist.discontinuities,
+    estimatedBytes: null,
+    freeBytes: null,
+    nativeResume: await exists(`${nativeCandidate.tsPath}.part.json`),
+    // A hybrid directory only applies when this run still wants an MP4.
+    hybridResume:
+      options.requestedMp4 &&
+      ((await exists(join(`${nativeCandidate.tsPath}.segments`, "fingerprint"))) ||
+        (await exists(join(`${mp4Candidate.requested}.segments`, "fingerprint")))),
+  };
+  const quick = selectEngine(context);
+  if (quick.engine !== "hybrid") return quick;
+  const target = options.explicitOutput ?? options.outputDirectory ?? ".";
+  const estimatedBytes = await (options.estimate ?? estimatePlaylistBytes)({ playlist: options.playlist, signal: options.signal });
+  const freeBytes = await (options.freeDisk ?? freeDiskBytes)(dirname(target));
+  return selectEngine({ ...context, estimatedBytes, freeBytes });
+}
+
 export async function downloadCommand(args: string[]): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     stdout.write(`${DOWNLOAD_HELP}\n`);
@@ -295,31 +366,33 @@ export async function downloadCommand(args: string[]): Promise<void> {
     const started = Date.now();
     const explicitOutput = options.output ? resolve(options.output) : null;
     const outputDirectory = options.outputDir ? resolve(options.outputDir) : null;
-    const engine = options.engine;
-    const wantsMp4 = options.remux || (explicitOutput?.toLowerCase().endsWith(".mp4") ?? false);
-    if (engine === "native" && wantsMp4 && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
+    const requestedEngine = options.engine;
+    const requestedMp4 = options.remux || (explicitOutput?.toLowerCase().endsWith(".mp4") ?? false);
+    if (requestedEngine === "native" && requestedMp4 && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
       throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
     }
-    if ((engine === "ffmpeg" || engine === "hybrid") && options.remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
+    if ((requestedEngine === "ffmpeg" || requestedEngine === "hybrid") && options.remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
       throw new ResolveError("--engine ffmpeg writes the container directly; drop --remux or use an .mp4 output.", "INVALID_ARGUMENT");
     }
-    const nativeRemux = engine === "native" && wantsMp4;
-    // The ffmpeg-backed engines default to MP4, since converting is what they are for.
-    const mp4Name = wantsMp4 || (engine !== "native" && explicitOutput === null);
-    const needsFfmpeg = engine !== "native" || nativeRemux;
-    // Fail before downloading gigabytes when ffmpeg is required but missing.
-    const tools = needsFfmpeg ? await resolveFfmpegTools(options, controller.signal) : null;
+    // findFfmpeg throws when an explicit path or the environment override is
+    // not a working binary; the result also feeds the auto selection.
+    const ffmpegAvailable = findFfmpeg(options.ffmpegPath) !== null;
+    // Explicit engines that cannot work without ffmpeg fail before resolving,
+    // so a missing binary never costs a network round trip.
+    const explicitTools =
+      requestedEngine === "ffmpeg" ||
+      requestedEngine === "hybrid" ||
+      (requestedEngine === "native" && requestedMp4);
+    let tools = explicitTools ? await resolveFfmpegTools(options, controller.signal) : null;
+    if (requestedMp4 && !tools && !ffmpegAvailable && !options.installFfmpeg) {
+      await resolveFfmpegTools(options, controller.signal);
+    }
     const result = await resolveM3U8(options.target, {
       timestampWindow: options.timestampWindow,
       signal: controller.signal,
       ...(options.channel ? { channel: options.channel } : {}),
     });
     const format = chooseFormat(result.formats, options.quality);
-    const { requested, tsPath } = selectOutputPaths(result, {
-      output: explicitOutput,
-      outputDir: outputDirectory,
-      remux: mp4Name,
-    });
 
     if (stderr.isTTY) {
       stderr.write(`Resolving ${result.kind === "hidden" ? result.canonicalTarget : `VOD ${result.videoId}`} (${format.id})...\n`);
@@ -329,6 +402,33 @@ export async function downloadCommand(args: string[]): Promise<void> {
     if (!playlist.endList) {
       stderr.write("Warning: the playlist has no ENDLIST; this VOD may still be recording.\n");
     }
+
+    const choice = await chooseEngine(requestedEngine, {
+      playlist,
+      requestedMp4,
+      keepTs: options.keepTs,
+      ffmpeg: ffmpegAvailable,
+      installFfmpeg: options.installFfmpeg,
+      explicitOutput,
+      outputDirectory,
+      result,
+      signal: controller.signal,
+    });
+    const engine = choice.engine;
+    if (requestedEngine === "auto") {
+      stderr.write(`Using the ${engine} engine: ${choice.reason}.\n`);
+    }
+    const nativeRemux = engine === "native" && requestedMp4;
+    // The ffmpeg-backed engines always write MP4; native keeps .ts unless MP4
+    // was requested.
+    const mp4Name = requestedMp4 || engine !== "native";
+    const { requested, tsPath } = selectOutputPaths(result, {
+      output: explicitOutput,
+      outputDir: outputDirectory,
+      remux: mp4Name,
+    });
+    const needsFfmpeg = engine !== "native" || nativeRemux;
+    if (needsFfmpeg && !tools) tools = await resolveFfmpegTools(options, controller.signal);
     let finalPath = tsPath;
     let remuxed = false;
     let verified: boolean | null = null;
@@ -495,6 +595,7 @@ export async function downloadCommand(args: string[]): Promise<void> {
           resumedFrom,
           seconds,
           engine,
+          engineReason: choice.reason,
           remuxed,
           verified,
         })}\n`,

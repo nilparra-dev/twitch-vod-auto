@@ -230,6 +230,11 @@ plays in VLC, MPV and most editors. `--install-ffmpeg` downloads a pinned LGPL
 static build from BtbN into `~/.cache/twitch-vod-m3u8/ffmpeg/`, verifies its
 published SHA-256 and reuses it. macOS is not covered by the pinned matrix yet;
 use Homebrew there or `--ffmpeg-path`.
+`--engine auto` (default) keeps the requested container and only chooses how an
+MP4 is built: hybrid by default, ffmpeg for fragmented or discontinued
+playlists and when free disk space cannot hold the segment directory, and
+native when a partial download can resume or `--keep-ts` is used. The decision
+and its reason are printed to stderr and reported as `engineReason` in `--json`.
 `--engine ffmpeg` skips the concatenation: ffmpeg downloads the validated
 playlist directly and stream-copies it, which avoids the per-segment boundary
 artifacts of the native engine. It downloads sequentially (slower) and cannot

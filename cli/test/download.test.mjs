@@ -58,6 +58,15 @@ describe("playlist parsing", () => {
     ]);
     assert.equal(parseMasterPlaylist("#EXTM3U\n#EXTINF:10,\na.ts", "https://cdn.example/a.m3u8"), null);
   });
+
+  it("counts discontinuities for engine selection", () => {
+    const playlist = parseMediaPlaylist(
+      "#EXTM3U\n#EXTINF:10,\na.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:10,\nb.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:10,\nc.ts\n#EXT-X-ENDLIST",
+      "https://d2nvs31859zcd8.cloudfront.net/vod/index.m3u8",
+    );
+    assert.equal(playlist.discontinuities, 2);
+    assert.equal(playlist.segments.length, 3);
+  });
 });
 
 describe("segment downloader", () => {
@@ -455,7 +464,8 @@ describe("download command arguments", () => {
   it("parses --engine and rejects unknown values", () => {
     assert.equal(parseDownloadArgs(["2434567890", "--engine", "ffmpeg"]).engine, "ffmpeg");
     assert.equal(parseDownloadArgs(["2434567890", "--engine", "hybrid"]).engine, "hybrid");
-    assert.equal(parseDownloadArgs(["2434567890"]).engine, "native");
+    assert.equal(parseDownloadArgs(["2434567890", "--engine", "auto"]).engine, "auto");
+    assert.equal(parseDownloadArgs(["2434567890"]).engine, "auto");
     assert.throws(
       () => parseDownloadArgs(["2434567890", "--engine", "wat"]),
       (error) => error.code === "INVALID_ARGUMENT",
