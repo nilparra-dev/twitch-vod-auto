@@ -208,13 +208,17 @@ the same missing paths; transient CDN failures are never cached.
 npx twitch-vod-m3u8@beta download 2434567890
 npx twitch-vod-m3u8@beta download "video:xqc_51582913581_1721686515" -q 720p60 -o clip.ts
 npx twitch-vod-m3u8@beta download 51582913581 --channel xqc
+npx twitch-vod-m3u8@beta download 2434567890 --output-dir "D:\VODs"
 npx twitch-vod-m3u8@beta list xqc --download 1
 ```
 
 Segments are fetched in parallel and written in order, so an interrupted
 download keeps a `.part` file and resumes when you run the same command again.
-Output defaults to `downloads/<id>.ts`; existing files and partial downloads
-are never overwritten without `--force`. `-o file.mp4` or `--remux` converts to
+Output defaults to `downloads/<id>.ts` in the current directory; existing files
+and partial downloads are never overwritten without `--force`. `-o` sets an
+exact file path, while `--output-dir` sets only the folder and keeps the
+generated name (`<id>.mp4` with `--remux`); the two options cannot be combined.
+A file ending in `.mp4` or `--remux` converts to
 MP4 with ffmpeg (`-c copy`, no re-encode); without ffmpeg the `.ts` file plays
 in VLC, MPV and most editors. Every segment URL and redirect must stay on
 Twitch's media domains, and an oversized segment aborts instead of filling the

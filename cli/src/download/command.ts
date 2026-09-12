@@ -19,6 +19,7 @@ keeps a .part file and resumes when you run the same command again.
 
 Options:
   -o, --output <file>       Output path (default downloads/<id>.ts)
+  --output-dir <folder>     Folder for the generated file name (default downloads/)
   -q, --quality <name>      Quality to download; defaults to best
   --channel <channel>       Channel for a hidden stream ID
   --concurrency <n>         Parallel segment downloads (default 8, max 32)
@@ -29,17 +30,20 @@ Options:
   --json                    Print structured JSON
   -h, --help                Show this help
 
-Using an output path that ends in .mp4 implies --remux.
+Using an output path that ends in .mp4 implies --remux. --output and
+--output-dir cannot be combined.
 
 Examples:
   twitch-m3u8 download 2434567890
   twitch-m3u8 download "video:xqc_51582913581_1721686515" -q 720p60
   twitch-m3u8 download 51582913581 --channel xqc -o clip.ts
+  twitch-m3u8 download 2434567890 --output-dir "D:\\VODs"
   twitch-m3u8 download "https://twitchtracker.com/xqc/streams/51582913581" -o clip.mp4`;
 
 interface DownloadCliOptions {
   target?: string;
   output?: string;
+  outputDir?: string;
   channel?: string;
   quality: string;
   concurrency: number;
@@ -50,7 +54,7 @@ interface DownloadCliOptions {
   timestampWindow: number;
 }
 
-function parseDownloadArgs(args: string[]): DownloadCliOptions {
+export function parseDownloadArgs(args: string[]): DownloadCliOptions {
   const options: DownloadCliOptions = {
     quality: "best",
     concurrency: 8,
@@ -63,10 +67,18 @@ function parseDownloadArgs(args: string[]): DownloadCliOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === "-o" || arg === "--output" || arg === "-q" || arg === "--quality" || arg === "--channel") {
+    if (
+      arg === "-o" ||
+      arg === "--output" ||
+      arg === "--output-dir" ||
+      arg === "-q" ||
+      arg === "--quality" ||
+      arg === "--channel"
+    ) {
       const value = args[index + 1];
       if (!value || value.startsWith("-")) throw new ResolveError(`${arg} requires a value.`, "INVALID_ARGUMENT");
       if (arg === "-o" || arg === "--output") options.output = value;
+      else if (arg === "--output-dir") options.outputDir = value;
       else if (arg === "--channel") options.channel = value;
       else options.quality = value;
       index += 1;
@@ -102,7 +114,37 @@ function parseDownloadArgs(args: string[]): DownloadCliOptions {
       throw new ResolveError(`Unexpected argument: ${arg}`, "INVALID_ARGUMENT");
     }
   }
+  if (options.output && options.outputDir) {
+    throw new ResolveError("--output and --output-dir cannot be combined.", "INVALID_ARGUMENT");
+  }
   return options;
+}
+
+/**
+ * Where the download goes. An explicit `--output` path wins; otherwise the
+ * file name is generated from the VOD identity and placed in `--output-dir` or
+ * in `downloads/`. The intermediate `.ts` path only differs when remuxing.
+ */
+export interface OutputSelection {
+  /** Resolved path from --output, or null to generate the file name. */
+  output: string | null;
+  /** Resolved directory from --output-dir, or null for the default downloads/ folder. */
+  outputDir: string | null;
+  /** True when the result is remuxed to MP4, which changes the generated extension. */
+  remux: boolean;
+}
+
+export function selectOutputPaths(
+  result: ResolveResult,
+  selection: OutputSelection,
+): { requested: string; tsPath: string } {
+  const generatedName = defaultFileName(result, selection.remux);
+  const requested =
+    selection.output ??
+    (selection.outputDir
+      ? join(selection.outputDir, generatedName)
+      : resolve(join("downloads", generatedName)));
+  return { requested, tsPath: selection.remux ? requested.replace(/\.mp4$/i, ".ts") : requested };
 }
 
 async function fetchText(url: string, signal: AbortSignal): Promise<string> {
@@ -141,13 +183,17 @@ async function loadMediaPlaylist(url: string, signal: AbortSignal): Promise<Medi
   return parseMediaPlaylist(text, url);
 }
 
-function defaultOutput(result: ResolveResult, mp4: boolean): string {
+/**
+ * File name generated from the resolved VOD identity. The caller decides the
+ * directory: `downloads/` by default, or the directory from `--output-dir`.
+ */
+function defaultFileName(result: ResolveResult, mp4: boolean): string {
   const extension = mp4 ? ".mp4" : ".ts";
   if (result.kind === "hidden") {
     const started = Math.floor(Date.parse(result.startedAt) / 1000);
-    return join("downloads", `${result.channel}_${result.streamId}_${started}${extension}`);
+    return `${result.channel}_${result.streamId}_${started}${extension}`;
   }
-  return join("downloads", `${result.videoId}${extension}`);
+  return `${result.videoId}${extension}`;
 }
 
 async function remuxToMp4(input: string, output: string): Promise<void> {
@@ -192,9 +238,10 @@ export async function downloadCommand(args: string[]): Promise<void> {
   process.once("SIGTERM", cancel);
   try {
     const started = Date.now();
-    const requestedOutput = options.output ? resolve(options.output) : null;
-    const remux = options.remux || (requestedOutput?.toLowerCase().endsWith(".mp4") ?? false);
-    if (remux && requestedOutput && !requestedOutput.toLowerCase().endsWith(".mp4")) {
+    const explicitOutput = options.output ? resolve(options.output) : null;
+    const outputDirectory = options.outputDir ? resolve(options.outputDir) : null;
+    const remux = options.remux || (explicitOutput?.toLowerCase().endsWith(".mp4") ?? false);
+    if (remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
       throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
     }
     // Fail before downloading gigabytes when ffmpeg is required but missing.
@@ -205,8 +252,11 @@ export async function downloadCommand(args: string[]): Promise<void> {
       ...(options.channel ? { channel: options.channel } : {}),
     });
     const format = chooseFormat(result.formats, options.quality);
-    const requested = requestedOutput ?? resolve(defaultOutput(result, remux));
-    const tsPath = remux ? requested.replace(/\.mp4$/i, ".ts") : requested;
+    const { requested, tsPath } = selectOutputPaths(result, {
+      output: explicitOutput,
+      outputDir: outputDirectory,
+      remux,
+    });
 
     if (stderr.isTTY) {
       stderr.write(`Resolving ${result.kind === "hidden" ? result.canonicalTarget : `VOD ${result.videoId}`} (${format.id})...\n`);

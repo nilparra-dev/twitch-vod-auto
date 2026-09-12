@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
+import { parseDownloadArgs, selectOutputPaths } from "../../dist/download/command.js";
 import { DownloadError, downloadPlaylist, fingerprintPlaylist } from "../../dist/download/fetcher.js";
 import { parseMasterPlaylist, parseMediaPlaylist } from "../../dist/download/playlist.js";
 
@@ -273,6 +274,78 @@ a.m4s
     await assert.rejects(
       downloadPlaylist({ playlist, output, fetch: async () => new Response("A", { status: 200 }) }),
       (error) => error instanceof DownloadError && error.code === "STATE_MISMATCH",
+    );
+  });
+});
+
+const publicResult = {
+  kind: "public",
+  source: "twitch",
+  videoId: "2434567890",
+  masterUrl: "https://d2nvs31859zcd8.cloudfront.net/vod/master.m3u8",
+  formats: [],
+};
+
+const hiddenResult = {
+  kind: "hidden",
+  source: "canonical",
+  channel: "xqc",
+  streamId: "51582913581",
+  startedAt: "2024-07-22T22:15:15Z",
+  canonicalTarget: "video:xqc_51582913581_1721686515",
+  formats: [],
+};
+
+describe("download command output selection", () => {
+  it("keeps the generated file name inside --output-dir", () => {
+    const directory = join(tmpdir(), "vods");
+    assert.deepEqual(selectOutputPaths(publicResult, { output: null, outputDir: directory, remux: false }), {
+      requested: join(directory, "2434567890.ts"),
+      tsPath: join(directory, "2434567890.ts"),
+    });
+  });
+
+  it("generates an .mp4 name with --remux and keeps the .ts intermediate", () => {
+    const directory = join(tmpdir(), "vods");
+    assert.deepEqual(selectOutputPaths(hiddenResult, { output: null, outputDir: directory, remux: true }), {
+      requested: join(directory, "xqc_51582913581_1721686515.mp4"),
+      tsPath: join(directory, "xqc_51582913581_1721686515.ts"),
+    });
+  });
+
+  it("prefers an explicit output path over the generated name", () => {
+    const output = join(tmpdir(), "clip.mp4");
+    assert.deepEqual(selectOutputPaths(publicResult, { output, outputDir: null, remux: true }), {
+      requested: output,
+      tsPath: join(tmpdir(), "clip.ts"),
+    });
+  });
+
+  it("defaults to downloads/ under the working directory", () => {
+    const { requested, tsPath } = selectOutputPaths(publicResult, { output: null, outputDir: null, remux: false });
+    assert.equal(requested, resolve(join("downloads", "2434567890.ts")));
+    assert.equal(tsPath, requested);
+  });
+});
+
+describe("download command arguments", () => {
+  it("parses --output-dir", () => {
+    const options = parseDownloadArgs(["2434567890", "--output-dir", "vods"]);
+    assert.equal(options.outputDir, "vods");
+    assert.equal(options.output, undefined);
+  });
+
+  it("rejects --output combined with --output-dir", () => {
+    assert.throws(
+      () => parseDownloadArgs(["2434567890", "-o", "clip.ts", "--output-dir", "vods"]),
+      (error) => error.code === "INVALID_ARGUMENT" && /cannot be combined/.test(error.message),
+    );
+  });
+
+  it("requires a value for --output-dir", () => {
+    assert.throws(
+      () => parseDownloadArgs(["2434567890", "--output-dir"]),
+      (error) => error.code === "INVALID_ARGUMENT" && /--output-dir requires a value/.test(error.message),
     );
   });
 });
