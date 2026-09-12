@@ -333,3 +333,21 @@ test("unavailable chat does not turn a playable video into an error", async (t) 
   assert.equal(state.state, "ready");
   assert.equal(state.chat.kind, "unavailable");
 });
+test("player assets revalidate with an ETag while the session stays no-store", async (t) => {
+  const server = await fixture(t);
+
+  const asset = await fetch(`${server.url}replay.html`);
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get("cache-control"), "private, no-cache");
+  const etag = asset.headers.get("etag");
+  assert.ok(etag);
+
+  const revalidated = await fetch(`${server.url}replay.html`, {
+    headers: { "if-none-match": etag },
+  });
+  assert.equal(revalidated.status, 304);
+  assert.equal((await revalidated.text()).length, 0);
+
+  const session = await fetch(server.api + "session");
+  assert.equal(session.headers.get("cache-control"), "no-store");
+});

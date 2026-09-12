@@ -363,7 +363,10 @@ credentials.
 To build an installable package, run `npm pack`. Its `prepack` step builds the CLI
 and the standalone page. After installing that tarball, use `twitch-m3u8 watch`.
 The published package includes the web assets and third-party license notices;
-end users do not need the source checkout or frontend build tools.
+end users do not need the source checkout or frontend build tools. The player
+shell imports hls.js only when remote streaming starts, so local file playback
+does not download the library, and the bundled assets are revalidated with an
+ETag inside a session.
 
 Keyboard shortcuts work anywhere on the page: `K` play/pause, left and right
 arrows seek 10 seconds, `M` mutes, `F` toggles fullscreen and `Escape` exits
