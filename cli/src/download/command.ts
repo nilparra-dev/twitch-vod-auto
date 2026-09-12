@@ -15,6 +15,7 @@ import {
   type FfmpegTools,
 } from "./ffmpeg.js";
 import { downloadHls } from "./hls.js";
+import { downloadHybrid } from "./hybrid.js";
 import { defaultCacheDir, provisionFfmpeg } from "./provision.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
 
@@ -32,7 +33,7 @@ Options:
   -q, --quality <name>      Quality to download; defaults to best
   --channel <channel>       Channel for a hidden stream ID
   --concurrency <n>         Parallel segment downloads (default 8, max 32)
-  --engine <name>           Download engine: native (default) or ffmpeg
+  --engine <name>           Download engine: native (default), ffmpeg or hybrid
   --force                   Overwrite an existing output or partial download
   --remux                   Convert to MP4 with ffmpeg (-c copy, no re-encode)
   --ffmpeg-path <file>      ffmpeg binary to use (default: PATH or $TWITCH_VOD_M3U8_FFMPEG)
@@ -62,7 +63,7 @@ interface DownloadCliOptions {
   ffmpegPath?: string;
   installFfmpeg: boolean;
   quality: string;
-  engine: "native" | "ffmpeg";
+  engine: "native" | "ffmpeg" | "hybrid";
   concurrency: number;
   force: boolean;
   remux: boolean;
@@ -113,8 +114,8 @@ export function parseDownloadArgs(args: string[]): DownloadCliOptions {
       index += 1;
     } else if (arg === "--engine") {
       const value = args[index + 1];
-      if (value !== "native" && value !== "ffmpeg") {
-        throw new ResolveError("--engine must be native or ffmpeg.", "INVALID_ARGUMENT");
+      if (value !== "native" && value !== "ffmpeg" && value !== "hybrid") {
+        throw new ResolveError("--engine must be native, ffmpeg or hybrid.", "INVALID_ARGUMENT");
       }
       options.engine = value;
       index += 1;
@@ -299,13 +300,13 @@ export async function downloadCommand(args: string[]): Promise<void> {
     if (engine === "native" && wantsMp4 && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
       throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
     }
-    if (engine === "ffmpeg" && options.remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
+    if ((engine === "ffmpeg" || engine === "hybrid") && options.remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
       throw new ResolveError("--engine ffmpeg writes the container directly; drop --remux or use an .mp4 output.", "INVALID_ARGUMENT");
     }
     const nativeRemux = engine === "native" && wantsMp4;
-    // The ffmpeg engine defaults to MP4, since converting is what it is for.
-    const mp4Name = wantsMp4 || (engine === "ffmpeg" && explicitOutput === null);
-    const needsFfmpeg = engine === "ffmpeg" || nativeRemux;
+    // The ffmpeg-backed engines default to MP4, since converting is what they are for.
+    const mp4Name = wantsMp4 || (engine !== "native" && explicitOutput === null);
+    const needsFfmpeg = engine !== "native" || nativeRemux;
     // Fail before downloading gigabytes when ffmpeg is required but missing.
     const tools = needsFfmpeg ? await resolveFfmpegTools(options, controller.signal) : null;
     const result = await resolveM3U8(options.target, {
@@ -368,6 +369,49 @@ export async function downloadCommand(args: string[]): Promise<void> {
       });
       if (stderr.isTTY) stderr.write("\n");
       finalPath = requested;
+    } else if (engine === "hybrid" && tools) {
+      if (!options.force && (await exists(requested))) {
+        throw new DownloadError(
+          `Output already exists: ${requested}. Use --force to overwrite or choose another path.`,
+          "OUTPUT_EXISTS",
+        );
+      }
+      const segmentDirectory = `${requested}.segments`;
+      if (stderr.isTTY) {
+        stderr.write(`Downloading ${segments} segments to ${segmentDirectory} (parallel)...\n`);
+      }
+      let lastLine = 0;
+      const hybrid = await downloadHybrid({
+        tools,
+        playlist,
+        directory: segmentDirectory,
+        output: requested,
+        concurrency: options.concurrency,
+        durationSeconds: playlist.totalDurationSeconds,
+        signal: controller.signal,
+        onSegmentsProgress: ({ written, total, bytes: writtenBytes }) => {
+          if (!stderr.isTTY) return;
+          const now = Date.now();
+          if (now - lastLine < 1000 && written < total) return;
+          lastLine = now;
+          const megaBytes = writtenBytes / (1024 * 1024);
+          const percent = String(Math.floor((written / total) * 100)).padStart(3, " ");
+          stderr.write(`\r${percent}% · ${written}/${total} segments · ${megaBytes.toFixed(1)} MB`);
+        },
+        onProgress: (progress) => {
+          if (!stderr.isTTY) return;
+          const now = Date.now();
+          if (now - lastLine < 1000 && progress.percent !== 100) return;
+          lastLine = now;
+          const size = progress.totalSizeBytes === null ? "" : ` · ${(progress.totalSizeBytes / 1048576).toFixed(0)} MB`;
+          stderr.write(`\rMuxing ${progress.percent ?? 0}%${size}${progress.speed ? ` · ${progress.speed}` : ""}`);
+        },
+      });
+      if (stderr.isTTY) stderr.write("\n");
+      bytes = hybrid.bytes;
+      segments = hybrid.segments;
+      resumedFrom = hybrid.reused;
+      finalPath = requested;
     } else {
       await mkdir(dirname(tsPath), { recursive: true });
       if (stderr.isTTY && playlist.segments.length > 0) {
@@ -427,7 +471,7 @@ export async function downloadCommand(args: string[]): Promise<void> {
 
     // The playlist duration is the reference; a mismatch means the output
     // dropped or added media, so surface it instead of reporting success.
-    if (tools && (engine === "ffmpeg" || nativeRemux)) {
+    if (tools && (engine !== "native" || nativeRemux)) {
       const expectedSeconds = playlist.totalDurationSeconds;
       const actualSeconds = tools.ffprobe ? probeDuration(tools.ffprobe, finalPath) : null;
       if (actualSeconds !== null) {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { parseDownloadArgs, selectOutputPaths } from "../../dist/download/command.js";
-import { DownloadError, downloadPlaylist, fingerprintPlaylist } from "../../dist/download/fetcher.js";
+import { DownloadError, downloadPlaylist, downloadSegments, fingerprintPlaylist } from "../../dist/download/fetcher.js";
 import { parseMasterPlaylist, parseMediaPlaylist } from "../../dist/download/playlist.js";
 
 const temporaryDirectories = [];
@@ -306,6 +306,85 @@ a.m4s
   });
 });
 
+describe("segment directory downloader", () => {
+  it("writes one file per segment and a fingerprint", async () => {
+    const directory = join(await workdir(), "segments");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    const chunks = { "a.ts": "A", "b.ts": "BB" };
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      return key in chunks ? new Response(chunks[key], { status: 200 }) : new Response("", { status: 404 });
+    };
+
+    const result = await downloadSegments({ playlist, directory, fetch: fakeFetch, retryDelayMs: 1 });
+
+    assert.equal(result.segments, 2);
+    assert.equal(result.reused, 0);
+    assert.equal(result.bytes, 3);
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "A");
+    assert.equal(await readFile(join(directory, "1.ts"), "utf8"), "BB");
+    assert.equal(await exists(join(directory, "0.ts.part")), false);
+    assert.equal(await exists(join(directory, "fingerprint")), true);
+  });
+
+  it("reuses existing segment files on a second run", async () => {
+    const directory = join(await workdir(), "segments");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    const chunks = { "a.ts": "A", "b.ts": "B" };
+    let calls = 0;
+    const fakeFetch = async (url) => {
+      calls += 1;
+      const key = String(url).split("/").at(-1);
+      return key in chunks ? new Response(chunks[key], { status: 200 }) : new Response("", { status: 404 });
+    };
+
+    await downloadSegments({ playlist, directory, fetch: fakeFetch, retryDelayMs: 1 });
+    calls = 0;
+    const result = await downloadSegments({ playlist, directory, fetch: fakeFetch, retryDelayMs: 1 });
+
+    assert.equal(calls, 0);
+    assert.equal(result.reused, 2);
+  });
+
+  it("wipes the directory when the playlist changes", async () => {
+    const directory = join(await workdir(), "segments");
+    const first = playlistWith("#EXTINF:10,\na.ts");
+    const second = playlistWith("#EXTINF:10,\nc.ts");
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      return key === "c.ts" ? new Response("C", { status: 200 }) : new Response("A", { status: 200 });
+    };
+
+    await downloadSegments({ playlist: first, directory, fetch: fakeFetch, retryDelayMs: 1 });
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "A");
+    await downloadSegments({ playlist: second, directory, fetch: fakeFetch, retryDelayMs: 1 });
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "C");
+  });
+
+  it("keeps the downloaded segments after a failure so a run can resume", async () => {
+    const directory = join(await workdir(), "segments");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    const failing = async (url) => {
+      const key = String(url).split("/").at(-1);
+      if (key === "a.ts") return new Response("A", { status: 200 });
+      return new Response("", { status: 503 });
+    };
+
+    await assert.rejects(
+      downloadSegments({ playlist, directory, fetch: failing, attempts: 1, concurrency: 1, retryDelayMs: 1 }),
+    );
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "A");
+
+    const working = async (url) => {
+      const key = String(url).split("/").at(-1);
+      return key === "b.ts" ? new Response("B", { status: 200 }) : new Response("", { status: 404 });
+    };
+    const result = await downloadSegments({ playlist, directory, fetch: working, retryDelayMs: 1 });
+    assert.equal(result.reused, 1);
+    assert.equal(await readFile(join(directory, "1.ts"), "utf8"), "B");
+  });
+});
+
 const publicResult = {
   kind: "public",
   source: "twitch",
@@ -375,6 +454,7 @@ describe("download command arguments", () => {
 
   it("parses --engine and rejects unknown values", () => {
     assert.equal(parseDownloadArgs(["2434567890", "--engine", "ffmpeg"]).engine, "ffmpeg");
+    assert.equal(parseDownloadArgs(["2434567890", "--engine", "hybrid"]).engine, "hybrid");
     assert.equal(parseDownloadArgs(["2434567890"]).engine, "native");
     assert.throws(
       () => parseDownloadArgs(["2434567890", "--engine", "wat"]),

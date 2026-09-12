@@ -233,7 +233,12 @@ use Homebrew there or `--ffmpeg-path`.
 `--engine ffmpeg` skips the concatenation: ffmpeg downloads the validated
 playlist directly and stream-copies it, which avoids the per-segment boundary
 artifacts of the native engine. It downloads sequentially (slower) and cannot
-resume. Every segment URL and redirect must stay on
+resume.
+`--engine hybrid` downloads the segments in parallel into `<output>.segments`
+next to the output, then muxes them with ffmpeg. It keeps the native engine's
+speed and per-segment resume, drops the concatenation artifacts, and removes
+the segment directory only after publishing the final file; a failed run keeps
+it and the next run reuses it. Every segment URL and redirect must stay on
 Twitch's media domains, and an oversized segment aborts instead of filling the
 disk.
 
