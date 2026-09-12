@@ -284,7 +284,10 @@ The JSON format is our versioned format, not a TwitchDownloader-compatible expor
 Downloads save committed pages in `downloads/chat.json.archive/pages.jsonl` and
 a bounded resume checkpoint in `checkpoint.json`. Repeat the same command and
 output path after a network failure or Ctrl+C to resume; the checkpoint lets a
-large archive continue without re-reading committed pages. Keep the `.archive`
+large archive continue without re-reading committed pages. The journal is
+fsynced per page, while the checkpoint is rewritten periodically (every ten
+pages or five seconds) and once more when the run stops; recovery reads the
+pages committed after the checkpoint. Keep the `.archive`
 directory until you have a finished JSON. A truncated final journal line is
 discarded on recovery; corrupt committed pages cause an error. Messages are
 streamed by page and only recent message IDs are kept for deduplication, so data
@@ -406,7 +409,10 @@ select Follow replay. Search scans the archive in order, with several range read
 in flight, and returns the first 100 matches. The current limits are 4 GB per
 file, two million messages and 1 MB per message or metadata block. Select the
 final `.json` export, not the internal `pages.jsonl` journal. A damaged or
-unsupported archive produces a visible error.
+unsupported archive produces a visible error. Remote chat is read in aligned
+4 MB blocks instead of one request per scan chunk, and the completed index is
+cached in the browser, keyed by file identity, so reopening the same archive
+does not rescan it.
 
 ## Development
 
