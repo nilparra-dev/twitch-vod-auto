@@ -229,7 +229,11 @@ duration with ffprobe, and accepts `--ffmpeg-path <file>` or the
 plays in VLC, MPV and most editors. `--install-ffmpeg` downloads a pinned LGPL
 static build from BtbN into `~/.cache/twitch-vod-m3u8/ffmpeg/`, verifies its
 published SHA-256 and reuses it. macOS is not covered by the pinned matrix yet;
-use Homebrew there or `--ffmpeg-path`. Every segment URL and redirect must stay on
+use Homebrew there or `--ffmpeg-path`.
+`--engine ffmpeg` skips the concatenation: ffmpeg downloads the validated
+playlist directly and stream-copies it, which avoids the per-segment boundary
+artifacts of the native engine. It downloads sequentially (slower) and cannot
+resume. Every segment URL and redirect must stay on
 Twitch's media domains, and an oversized segment aborts instead of filling the
 disk.
 

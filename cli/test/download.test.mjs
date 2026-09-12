@@ -373,6 +373,15 @@ describe("download command arguments", () => {
     assert.equal(options.installFfmpeg, true);
   });
 
+  it("parses --engine and rejects unknown values", () => {
+    assert.equal(parseDownloadArgs(["2434567890", "--engine", "ffmpeg"]).engine, "ffmpeg");
+    assert.equal(parseDownloadArgs(["2434567890"]).engine, "native");
+    assert.throws(
+      () => parseDownloadArgs(["2434567890", "--engine", "wat"]),
+      (error) => error.code === "INVALID_ARGUMENT",
+    );
+  });
+
   it("rejects --output combined with --output-dir", () => {
     assert.throws(
       () => parseDownloadArgs(["2434567890", "-o", "clip.ts", "--output-dir", "vods"]),

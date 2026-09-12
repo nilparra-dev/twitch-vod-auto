@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { stderr, stdout } from "node:process";
 
@@ -11,8 +11,10 @@ import {
   findFfmpeg,
   probeDuration,
   remuxToMp4,
+  type FfmpegProgress,
   type FfmpegTools,
 } from "./ffmpeg.js";
+import { downloadHls } from "./hls.js";
 import { defaultCacheDir, provisionFfmpeg } from "./provision.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
 
@@ -30,6 +32,7 @@ Options:
   -q, --quality <name>      Quality to download; defaults to best
   --channel <channel>       Channel for a hidden stream ID
   --concurrency <n>         Parallel segment downloads (default 8, max 32)
+  --engine <name>           Download engine: native (default) or ffmpeg
   --force                   Overwrite an existing output or partial download
   --remux                   Convert to MP4 with ffmpeg (-c copy, no re-encode)
   --ffmpeg-path <file>      ffmpeg binary to use (default: PATH or $TWITCH_VOD_M3U8_FFMPEG)
@@ -40,7 +43,9 @@ Options:
   -h, --help                Show this help
 
 Using an output path that ends in .mp4 implies --remux. --output and
---output-dir cannot be combined.
+--output-dir cannot be combined. The ffmpeg engine downloads the playlist
+directly: it cannot resume, but it avoids the segment concatenation artifacts
+of the native engine.
 
 Examples:
   twitch-m3u8 download 2434567890
@@ -57,6 +62,7 @@ interface DownloadCliOptions {
   ffmpegPath?: string;
   installFfmpeg: boolean;
   quality: string;
+  engine: "native" | "ffmpeg";
   concurrency: number;
   force: boolean;
   remux: boolean;
@@ -68,6 +74,7 @@ interface DownloadCliOptions {
 export function parseDownloadArgs(args: string[]): DownloadCliOptions {
   const options: DownloadCliOptions = {
     quality: "best",
+    engine: "native",
     concurrency: 8,
     force: false,
     remux: false,
@@ -103,6 +110,13 @@ export function parseDownloadArgs(args: string[]): DownloadCliOptions {
         throw new ResolveError("--concurrency requires an integer between 1 and 32.", "INVALID_ARGUMENT");
       }
       options.concurrency = parsed;
+      index += 1;
+    } else if (arg === "--engine") {
+      const value = args[index + 1];
+      if (value !== "native" && value !== "ffmpeg") {
+        throw new ResolveError("--engine must be native or ffmpeg.", "INVALID_ARGUMENT");
+      }
+      options.engine = value;
       index += 1;
     } else if (arg === "--timestamp-window") {
       const value = args[index + 1];
@@ -188,15 +202,22 @@ async function fetchText(url: string, signal: AbortSignal): Promise<string> {
  * Resolve the selected format to a media playlist. Resolver formats are
  * already media playlists; the master fallback only exists for safety.
  */
-async function loadMediaPlaylist(url: string, signal: AbortSignal): Promise<MediaPlaylist> {
+interface MediaPlaylistSource {
+  playlist: MediaPlaylist;
+  text: string;
+  baseUrl: string;
+}
+
+async function loadMediaPlaylist(url: string, signal: AbortSignal): Promise<MediaPlaylistSource> {
   const text = await fetchText(url, signal);
   const variants = parseMasterPlaylist(text, url);
   if (variants) {
     const variant = variants[0];
     if (!variant) throw new ResolveError("The master playlist has no variants.", "EMPTY_PLAYLIST");
-    return parseMediaPlaylist(await fetchText(variant, signal), variant);
+    const variantText = await fetchText(variant, signal);
+    return { playlist: parseMediaPlaylist(variantText, variant), text: variantText, baseUrl: variant };
   }
-  return parseMediaPlaylist(text, url);
+  return { playlist: parseMediaPlaylist(text, url), text, baseUrl: url };
 }
 
 /**
@@ -210,6 +231,13 @@ function defaultFileName(result: ResolveResult, mp4: boolean): string {
     return `${result.channel}_${result.streamId}_${started}${extension}`;
   }
   return `${result.videoId}${extension}`;
+}
+
+async function exists(path: string): Promise<boolean> {
+  return stat(path).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function resolveFfmpegTools(options: DownloadCliOptions, signal: AbortSignal): Promise<FfmpegTools> {
@@ -261,17 +289,25 @@ export async function downloadCommand(args: string[]): Promise<void> {
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
-  let phase: "download" | "remux" = "download";
+  let phase: "download" | "remux" | "hls" = "download";
   try {
     const started = Date.now();
     const explicitOutput = options.output ? resolve(options.output) : null;
     const outputDirectory = options.outputDir ? resolve(options.outputDir) : null;
-    const remux = options.remux || (explicitOutput?.toLowerCase().endsWith(".mp4") ?? false);
-    if (remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
+    const engine = options.engine;
+    const wantsMp4 = options.remux || (explicitOutput?.toLowerCase().endsWith(".mp4") ?? false);
+    if (engine === "native" && wantsMp4 && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
       throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
     }
+    if (engine === "ffmpeg" && options.remux && explicitOutput && !explicitOutput.toLowerCase().endsWith(".mp4")) {
+      throw new ResolveError("--engine ffmpeg writes the container directly; drop --remux or use an .mp4 output.", "INVALID_ARGUMENT");
+    }
+    const nativeRemux = engine === "native" && wantsMp4;
+    // The ffmpeg engine defaults to MP4, since converting is what it is for.
+    const mp4Name = wantsMp4 || (engine === "ffmpeg" && explicitOutput === null);
+    const needsFfmpeg = engine === "ffmpeg" || nativeRemux;
     // Fail before downloading gigabytes when ffmpeg is required but missing.
-    const tools = remux ? await resolveFfmpegTools(options, controller.signal) : null;
+    const tools = needsFfmpeg ? await resolveFfmpegTools(options, controller.signal) : null;
     const result = await resolveM3U8(options.target, {
       timestampWindow: options.timestampWindow,
       signal: controller.signal,
@@ -281,92 +317,140 @@ export async function downloadCommand(args: string[]): Promise<void> {
     const { requested, tsPath } = selectOutputPaths(result, {
       output: explicitOutput,
       outputDir: outputDirectory,
-      remux,
+      remux: mp4Name,
     });
 
     if (stderr.isTTY) {
       stderr.write(`Resolving ${result.kind === "hidden" ? result.canonicalTarget : `VOD ${result.videoId}`} (${format.id})...\n`);
     }
-    const playlist = await loadMediaPlaylist(format.url, controller.signal);
+    const source = await loadMediaPlaylist(format.url, controller.signal);
+    const playlist = source.playlist;
     if (!playlist.endList) {
       stderr.write("Warning: the playlist has no ENDLIST; this VOD may still be recording.\n");
     }
-    await mkdir(dirname(tsPath), { recursive: true });
-    if (stderr.isTTY && playlist.segments.length > 0) {
-      stderr.write(`Downloading ${playlist.segments.length} segments to ${tsPath}...\n`);
-    }
-
-    let lastLine = 0;
-    const downloaded = await downloadPlaylist({
-      playlist,
-      output: tsPath,
-      concurrency: options.concurrency,
-      force: options.force,
-      signal: controller.signal,
-      onProgress: ({ written, total, bytes }) => {
-        if (!stderr.isTTY) return;
-        const now = Date.now();
-        if (now - lastLine < 1000 && written < total) return;
-        lastLine = now;
-        const megaBytes = bytes / (1024 * 1024);
-        const elapsed = Math.max((now - started) / 1000, 0.001);
-        const percent = String(Math.floor((written / total) * 100)).padStart(3, " ");
-        stderr.write(
-          `\r${percent}% · ${written}/${total} segments · ${megaBytes.toFixed(1)} MB · ${(megaBytes / elapsed).toFixed(1)} MB/s`,
-        );
-      },
-    });
-    if (stderr.isTTY && playlist.segments.length > 0) stderr.write("\n");
-
     let finalPath = tsPath;
     let remuxed = false;
     let verified: boolean | null = null;
-    if (remux && tools) {
-      phase = "remux";
-      if (stderr.isTTY) stderr.write(`Remuxing to ${requested} (stream copy)...\n`);
-      let lastRemuxLine = 0;
-      await remuxToMp4({
+    let bytes = 0;
+    let segments = playlist.segments.length;
+    let resumedFrom = 0;
+
+    if (engine === "ffmpeg" && tools) {
+      phase = "hls";
+      if (!options.force && (await exists(requested))) {
+        throw new DownloadError(
+          `Output already exists: ${requested}. Use --force to overwrite or choose another path.`,
+          "OUTPUT_EXISTS",
+        );
+      }
+      await mkdir(dirname(requested), { recursive: true });
+      if (stderr.isTTY) {
+        stderr.write(`Downloading ${segments} segments with ffmpeg to ${requested}...\n`);
+      }
+      let lastLine = 0;
+      await downloadHls({
         tools,
-        input: tsPath,
+        playlistText: source.text,
+        playlistUrl: source.baseUrl,
+        playlistPath: `${requested}.playlist.m3u8`,
         output: requested,
-        signal: controller.signal,
         durationSeconds: playlist.totalDurationSeconds,
+        signal: controller.signal,
         onProgress: (progress) => {
+          if (progress.totalSizeBytes !== null) bytes = progress.totalSizeBytes;
           if (!stderr.isTTY) return;
           const now = Date.now();
-          if (now - lastRemuxLine < 1000 && progress.percent !== 100) return;
-          lastRemuxLine = now;
+          if (now - lastLine < 1000 && progress.percent !== 100) return;
+          lastLine = now;
           const size = progress.totalSizeBytes === null ? "" : ` · ${(progress.totalSizeBytes / 1048576).toFixed(0)} MB`;
-          stderr.write(`\rRemuxing ${progress.percent ?? 0}%${size}${progress.speed ? ` · ${progress.speed}` : ""}`);
+          stderr.write(`\rDownloading ${progress.percent ?? 0}%${size}${progress.speed ? ` · ${progress.speed}` : ""}`);
         },
       });
       if (stderr.isTTY) stderr.write("\n");
       finalPath = requested;
-      remuxed = true;
-      if (!options.keepTs) await rm(tsPath, { force: true });
-      // The playlist duration is the reference; a mismatch means the remux
-      // dropped or added media, so surface it instead of reporting success.
+    } else {
+      await mkdir(dirname(tsPath), { recursive: true });
+      if (stderr.isTTY && playlist.segments.length > 0) {
+        stderr.write(`Downloading ${playlist.segments.length} segments to ${tsPath}...\n`);
+      }
+
+      let lastLine = 0;
+      const downloaded = await downloadPlaylist({
+        playlist,
+        output: tsPath,
+        concurrency: options.concurrency,
+        force: options.force,
+        signal: controller.signal,
+        onProgress: ({ written, total, bytes: writtenBytes }) => {
+          if (!stderr.isTTY) return;
+          const now = Date.now();
+          if (now - lastLine < 1000 && written < total) return;
+          lastLine = now;
+          const megaBytes = writtenBytes / (1024 * 1024);
+          const elapsed = Math.max((now - started) / 1000, 0.001);
+          const percent = String(Math.floor((written / total) * 100)).padStart(3, " ");
+          stderr.write(
+            `\r${percent}% · ${written}/${total} segments · ${megaBytes.toFixed(1)} MB · ${(megaBytes / elapsed).toFixed(1)} MB/s`,
+          );
+        },
+      });
+      if (stderr.isTTY && playlist.segments.length > 0) stderr.write("\n");
+      bytes = downloaded.bytes;
+      segments = downloaded.segments;
+      resumedFrom = downloaded.resumedFrom;
+
+      if (nativeRemux && tools) {
+        phase = "remux";
+        if (stderr.isTTY) stderr.write(`Remuxing to ${requested} (stream copy)...\n`);
+        let lastRemuxLine = 0;
+        await remuxToMp4({
+          tools,
+          input: tsPath,
+          output: requested,
+          signal: controller.signal,
+          durationSeconds: playlist.totalDurationSeconds,
+          onProgress: (progress) => {
+            if (!stderr.isTTY) return;
+            const now = Date.now();
+            if (now - lastRemuxLine < 1000 && progress.percent !== 100) return;
+            lastRemuxLine = now;
+            const size = progress.totalSizeBytes === null ? "" : ` · ${(progress.totalSizeBytes / 1048576).toFixed(0)} MB`;
+            stderr.write(`\rRemuxing ${progress.percent ?? 0}%${size}${progress.speed ? ` · ${progress.speed}` : ""}`);
+          },
+        });
+        if (stderr.isTTY) stderr.write("\n");
+        finalPath = requested;
+        remuxed = true;
+        if (!options.keepTs) await rm(tsPath, { force: true });
+      }
+    }
+
+    // The playlist duration is the reference; a mismatch means the output
+    // dropped or added media, so surface it instead of reporting success.
+    if (tools && (engine === "ffmpeg" || nativeRemux)) {
       const expectedSeconds = playlist.totalDurationSeconds;
-      const actualSeconds = tools.ffprobe ? probeDuration(tools.ffprobe, requested) : null;
+      const actualSeconds = tools.ffprobe ? probeDuration(tools.ffprobe, finalPath) : null;
       if (actualSeconds !== null) {
         verified = Math.abs(actualSeconds - expectedSeconds) <= Math.max(2, expectedSeconds * 0.01);
         if (!verified && stderr.isTTY) {
           stderr.write(
-            `Warning: the remuxed duration (${actualSeconds.toFixed(1)}s) differs from the playlist (${expectedSeconds.toFixed(1)}s).\n`,
+            `Warning: the output duration (${actualSeconds.toFixed(1)}s) differs from the playlist (${expectedSeconds.toFixed(1)}s).\n`,
           );
         }
       }
     }
+
     const seconds = (Date.now() - started) / 1000;
     if (options.json) {
       stdout.write(
         `${JSON.stringify({
           output: finalPath,
-          bytes: downloaded.bytes,
-          segments: downloaded.segments,
+          bytes,
+          segments,
           durationSeconds: playlist.totalDurationSeconds,
-          resumedFrom: downloaded.resumedFrom,
+          resumedFrom,
           seconds,
+          engine,
           remuxed,
           verified,
         })}\n`,
@@ -375,8 +459,8 @@ export async function downloadCommand(args: string[]): Promise<void> {
       stdout.write(`${finalPath}\n`);
       if (stderr.isTTY) {
         stderr.write(
-          `Saved ${downloaded.segments} segments (${(downloaded.bytes / (1024 * 1024)).toFixed(1)} MB) in ${seconds.toFixed(1)}s` +
-            `${downloaded.resumedFrom > 0 ? ` (resumed from segment ${downloaded.resumedFrom})` : ""}.\n`,
+          `Saved ${segments} segments (${(bytes / (1024 * 1024)).toFixed(1)} MB) in ${seconds.toFixed(1)}s` +
+            `${resumedFrom > 0 ? ` (resumed from segment ${resumedFrom})` : ""}.\n`,
         );
       }
     }
@@ -385,7 +469,9 @@ export async function downloadCommand(args: string[]): Promise<void> {
     const message = aborted
       ? phase === "remux"
         ? "Remux interrupted. The downloaded .ts file was kept; run the command again with --force to retry."
-        : "Download interrupted. Run the same command to resume."
+        : phase === "hls"
+          ? "Download interrupted. The ffmpeg engine starts over on the next run."
+          : "Download interrupted. Run the same command to resume."
       : error instanceof Error
         ? error.message
         : String(error);
