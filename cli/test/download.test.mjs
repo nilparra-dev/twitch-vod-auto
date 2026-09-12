@@ -368,6 +368,11 @@ describe("download command arguments", () => {
     assert.equal(options.ffmpegPath, "C:/tools/ffmpeg.exe");
   });
 
+  it("parses --install-ffmpeg", () => {
+    const options = parseDownloadArgs(["2434567890", "--install-ffmpeg"]);
+    assert.equal(options.installFfmpeg, true);
+  });
+
   it("rejects --output combined with --output-dir", () => {
     assert.throws(
       () => parseDownloadArgs(["2434567890", "-o", "clip.ts", "--output-dir", "vods"]),

@@ -226,7 +226,10 @@ A file ending in `.mp4` or `--remux` converts to
 MP4 with ffmpeg (`-c copy`, no re-encode, `+faststart`), checks the result
 duration with ffprobe, and accepts `--ffmpeg-path <file>` or the
 `TWITCH_VOD_M3U8_FFMPEG` environment variable; without ffmpeg the `.ts` file
-plays in VLC, MPV and most editors. Every segment URL and redirect must stay on
+plays in VLC, MPV and most editors. `--install-ffmpeg` downloads a pinned LGPL
+static build from BtbN into `~/.cache/twitch-vod-m3u8/ffmpeg/`, verifies its
+published SHA-256 and reuses it. macOS is not covered by the pinned matrix yet;
+use Homebrew there or `--ffmpeg-path`. Every segment URL and redirect must stay on
 Twitch's media domains, and an oversized segment aborts instead of filling the
 disk.
 

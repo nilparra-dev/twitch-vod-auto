@@ -13,6 +13,7 @@ import {
   remuxToMp4,
   type FfmpegTools,
 } from "./ffmpeg.js";
+import { defaultCacheDir, provisionFfmpeg } from "./provision.js";
 import { parseMasterPlaylist, parseMediaPlaylist, type MediaPlaylist } from "./playlist.js";
 
 export const DOWNLOAD_HELP = `Download a Twitch VOD as a single file, without ffmpeg by default.
@@ -32,6 +33,7 @@ Options:
   --force                   Overwrite an existing output or partial download
   --remux                   Convert to MP4 with ffmpeg (-c copy, no re-encode)
   --ffmpeg-path <file>      ffmpeg binary to use (default: PATH or $TWITCH_VOD_M3U8_FFMPEG)
+  --install-ffmpeg          Download a pinned LGPL ffmpeg build into the user cache
   --keep-ts                 Keep the intermediate .ts file after --remux
   --timestamp-window <secs> Search window for approximate timestamps (default ${DEFAULT_TIMESTAMP_WINDOW})
   --json                    Print structured JSON
@@ -53,6 +55,7 @@ interface DownloadCliOptions {
   outputDir?: string;
   channel?: string;
   ffmpegPath?: string;
+  installFfmpeg: boolean;
   quality: string;
   concurrency: number;
   force: boolean;
@@ -70,6 +73,7 @@ export function parseDownloadArgs(args: string[]): DownloadCliOptions {
     remux: false,
     keepTs: false,
     json: false,
+    installFfmpeg: false,
     timestampWindow: DEFAULT_TIMESTAMP_WINDOW,
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -112,6 +116,8 @@ export function parseDownloadArgs(args: string[]): DownloadCliOptions {
       options.force = true;
     } else if (arg === "--remux") {
       options.remux = true;
+    } else if (arg === "--install-ffmpeg") {
+      options.installFfmpeg = true;
     } else if (arg === "--keep-ts") {
       options.keepTs = true;
     } else if (arg === "--json") {
@@ -206,11 +212,34 @@ function defaultFileName(result: ResolveResult, mp4: boolean): string {
   return `${result.videoId}${extension}`;
 }
 
-function resolveFfmpegTools(explicit?: string): FfmpegTools {
-  const tools = findFfmpeg(explicit);
+async function resolveFfmpegTools(options: DownloadCliOptions, signal: AbortSignal): Promise<FfmpegTools> {
+  const tools = findFfmpeg(options.ffmpegPath);
   if (tools) return tools;
+  if (options.installFfmpeg) {
+    if (stderr.isTTY) stderr.write("Fetching a pinned LGPL ffmpeg build (one time)...\n");
+    let lastLine = 0;
+    try {
+      return await provisionFfmpeg({
+        signal,
+        onStart: (release) => {
+          stderr.write(`  ${release.url}\n  SHA-256: ${release.sha256}\n  Cache: ${defaultCacheDir()}\n`);
+        },
+        onProgress: ({ receivedBytes, totalBytes }) => {
+          if (!stderr.isTTY) return;
+          const now = Date.now();
+          if (now - lastLine < 500) return;
+          lastLine = now;
+          const received = (receivedBytes / 1048576).toFixed(1);
+          const total = totalBytes === null ? "" : `/${(totalBytes / 1048576).toFixed(1)}`;
+          stderr.write(`\rDownloading ffmpeg ${received}${total} MB`);
+        },
+      });
+    } finally {
+      if (stderr.isTTY) stderr.write("\n");
+    }
+  }
   throw new ResolveError(
-    "ffmpeg was not found. Install it or pass --ffmpeg-path <file>.\n" +
+    "ffmpeg was not found. Install it, pass --ffmpeg-path <file>, or re-run with --install-ffmpeg.\n" +
       "  Windows: winget install --id Gyan.FFmpeg -e\n" +
       "  macOS:   brew install ffmpeg\n" +
       "  Linux:   sudo apt install ffmpeg",
@@ -242,7 +271,7 @@ export async function downloadCommand(args: string[]): Promise<void> {
       throw new ResolveError("--remux requires an output path ending in .mp4.", "INVALID_ARGUMENT");
     }
     // Fail before downloading gigabytes when ffmpeg is required but missing.
-    const tools = remux ? resolveFfmpegTools(options.ffmpegPath) : null;
+    const tools = remux ? await resolveFfmpegTools(options, controller.signal) : null;
     const result = await resolveM3U8(options.target, {
       timestampWindow: options.timestampWindow,
       signal: controller.signal,
