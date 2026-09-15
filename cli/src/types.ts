@@ -4,7 +4,8 @@ export type ParsedInput =
   | { kind: "public"; videoId: string }
   | { kind: "hidden"; channel: string; streamId: string; timestamp: number; source: "canonical" }
   | { kind: "tracker"; channel: string; streamId: string; provider: TrackerProvider }
-  | { kind: "stream-id"; streamId: string };
+  | { kind: "stream-id"; streamId: string }
+  | { kind: "live"; channel: string };
 
 export interface PlaylistFormat {
   id: string;
@@ -32,6 +33,13 @@ export type ResolveResult =
       kind: "public";
       source: "twitch";
       videoId: string;
+      masterUrl: string;
+      formats: PlaylistFormat[];
+    }
+  | {
+      kind: "live";
+      source: "twitch";
+      channel: string;
       masterUrl: string;
       formats: PlaylistFormat[];
     }

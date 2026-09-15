@@ -87,6 +87,7 @@ export function ReplayPlayer() {
   const remoteChatUrl = remoteChat?.url;
   const remoteChatSize = remoteChat?.size ?? 0;
   const title = media?.kind === "remote" ? media.title : videoFile?.name;
+  const isLive = remote?.source === "live" && media?.kind === "remote";
 
   const {
     chat,
@@ -109,7 +110,7 @@ export function ReplayPlayer() {
   });
   const { remember, restore } = usePositionPersistence(storageKey, video);
 
-  useHls(video, videoUrl, media?.kind === "remote", setVideoError);
+  useHls(video, videoUrl, media?.kind === "remote", setVideoError, isLive);
 
   useEffect(() => {
     if (
@@ -285,7 +286,7 @@ export function ReplayPlayer() {
       <div className="replay-layout">
         <div className="replay-main">
           <div className="replay-watch-heading">
-            <span>Replay</span>
+            <span>{isLive ? "Live" : "Replay"}</span>
             <span className="replay-heading-divider">/</span>
             <span className="replay-heading-title">{title || "No broadcast open"}</span>
             <span className="replay-local-status">
@@ -418,9 +419,11 @@ export function ReplayPlayer() {
               <div className="replay-metadata">
                 <span className="replay-source-badge">
                   {media?.kind === "remote"
-                    ? remote?.source === "hidden"
-                      ? "Recovered VOD"
-                      : "Twitch VOD"
+                    ? remote?.source === "live"
+                      ? "Live · ads filtered"
+                      : remote?.source === "hidden"
+                        ? "Recovered VOD"
+                        : "Twitch VOD"
                     : "Local video"}
                 </span>
                 <span>

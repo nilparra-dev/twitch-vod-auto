@@ -10,7 +10,9 @@ import { homedir } from "node:os";
 import { randomBytes, createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { once } from "node:events";
-import { chooseFormat, resolveM3U8 } from "../resolver.js";
+import { chooseFormat, ResolveError, resolveM3U8 } from "../resolver.js";
+import { stripLiveAds } from "../live/ads.js";
+import { resolveLiveM3U8 } from "../live/resolver.js";
 import { downloadChat } from "../chat/archive.js";
 import { TwitchChatClient } from "../chat/twitch.js";
 import { ChatError, record, string } from "../chat/model.js";
@@ -30,6 +32,10 @@ export interface ServerOptions {
   timestampWindow?: number;
   resolver?: (input: string, options: ResolveOptions) => Promise<ResolveResult>;
   fetch?: typeof fetch;
+  /** "live" resolves channels that are broadcasting now and filters ads. */
+  mode?: "vod" | "live";
+  /** Strip stitched ad segments from live playlists. Defaults to true in live mode. */
+  liveAds?: boolean;
 }
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -166,7 +172,9 @@ export async function startWatchServer(options: ServerOptions) {
     throw error;
   });
   const prefix = `/${randomBytes(24).toString("hex")}/`;
-  let registry = new MediaRegistry(prefix);
+  const liveMode = options.mode === "live";
+  const filterLiveAds = liveMode && options.liveAds !== false;
+  let registry = new MediaRegistry(prefix, liveMode ? { evictOldest: true } : {});
   let previousRegistry: MediaRegistry | null = null;
   let origin = "";
   let chatPath: string | null = null;
@@ -174,6 +182,10 @@ export async function startWatchServer(options: ServerOptions) {
   let closed = false;
   let controller = new AbortController();
   let chatTask: Promise<void> = Promise.resolve();
+  /** Normalized live channel of the current session, for token refresh. */
+  let liveChannel: string | null = null;
+  let liveRefreshAt = 0;
+  let liveRefreshTask: Promise<void> | null = null;
   let session: PlayerSession = {
     revision: 0,
     input: "",
@@ -185,6 +197,34 @@ export async function startWatchServer(options: ServerOptions) {
     chat: { kind: "idle" },
   };
   const resolver = options.resolver ?? resolveM3U8;
+  /**
+   * Resolve one session input. A custom resolver always wins so tests can
+   * inject transports; otherwise live mode uses the live token flow and VOD
+   * mode uses the default resolver. The caller-provided fetch is forwarded
+   * in every path so staged servers control the transport.
+   */
+  async function resolveForSession(input: string, channel: string | undefined, signal: AbortSignal): Promise<ResolveResult> {
+    if (options.resolver) {
+      return resolver(input, {
+        signal,
+        ...(channel ? { channel } : {}),
+        ...(options.timestampWindow !== undefined ? { timestampWindow: options.timestampWindow } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      });
+    }
+    if (liveMode) {
+      return resolveLiveM3U8(channel ?? input, {
+        signal,
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      });
+    }
+    return resolver(input, {
+      signal,
+      ...(channel ? { channel } : {}),
+      ...(options.timestampWindow !== undefined ? { timestampWindow: options.timestampWindow } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+  }
   async function prepareChat(
     id: number,
     input: string,
@@ -255,6 +295,7 @@ export async function startWatchServer(options: ServerOptions) {
     const signal = controller.signal;
     const previousChat = chatTask;
     chatPath = null;
+    liveChannel = null;
     session = {
       revision: id,
       input,
@@ -266,22 +307,21 @@ export async function startWatchServer(options: ServerOptions) {
       chat: { kind: "idle" },
     };
     try {
-      const result = await resolver(input, {
-        signal,
-        ...(channel ? { channel } : {}),
-        ...(options.timestampWindow !== undefined ? { timestampWindow: options.timestampWindow } : {}),
-      });
+      const result = await resolveForSession(input, channel, signal);
       if (id !== generation || closed) return;
       previousRegistry = registry;
-      registry = new MediaRegistry(prefix);
+      registry = new MediaRegistry(prefix, liveMode ? { evictOldest: true } : {});
       const selected = chooseFormat(result.formats, options.quality ?? "best");
+      if (result.kind === "live") liveChannel = result.channel;
       session = {
         ...session,
         state: "ready",
         title:
           result.kind === "hidden"
             ? `${result.channel} · ${new Date(result.startedAt).toLocaleDateString("en-GB")}`
-            : `Twitch VOD ${result.videoId}`,
+            : result.kind === "live"
+              ? `${result.channel} · live`
+              : `Twitch VOD ${result.videoId}`,
         source: result.kind,
         formats: [
           selected,
@@ -291,7 +331,13 @@ export async function startWatchServer(options: ServerOptions) {
           url: registry.register(format.url, true),
         })),
       };
-      if (options.autoChat !== false || options.chatFile) {
+      if (liveMode) {
+        // V1 has no live chat: the replay archiver needs a finished VOD.
+        session.chat = {
+          kind: "unavailable",
+          message: "Live chat is not supported yet. Video still plays.",
+        };
+      } else if (options.autoChat !== false || options.chatFile) {
         session.chat = { kind: "downloading", messages: 0 };
         chatTask = previousChat.then(() =>
           prepareChat(id, input, result, signal),
@@ -305,8 +351,89 @@ export async function startWatchServer(options: ServerOptions) {
           error:
             error instanceof Error
               ? error.message
-              : "Could not recover this VOD.",
+              : liveMode
+                ? "Could not open this live channel."
+                : "Could not recover this VOD.",
         };
+    }
+  }
+  /**
+   * Re-resolve the live channel after an upstream 401/403 (expired playback
+   * token). Single-flight with a cooldown so a retry storm from several
+   * qualities triggers at most one refresh; the polling player picks up the
+   * new revision with fresh URLs on its next tick.
+   *
+   * Unlike load(), a transient refresh failure keeps the current ready
+   * session and channel so the next 401/403 retries. Only a definitive
+   * OFFLINE (stream ended) replaces the session with an error.
+   */
+  async function refreshLive(): Promise<void> {
+    if (!liveMode || closed) return;
+    const channel = liveChannel;
+    if (!channel) return;
+    const now = Date.now();
+    if (liveRefreshTask) return liveRefreshTask;
+    if (now - liveRefreshAt < 5_000) return;
+    liveRefreshAt = now;
+    const task = (async (): Promise<void> => {
+      const signal = controller.signal;
+      let result: ResolveResult;
+      try {
+        result = await resolveForSession(channel, undefined, signal);
+      } catch (error) {
+        if (signal.aborted || closed) return;
+        if (error instanceof ResolveError && error.code === "OFFLINE") {
+          const id = ++generation;
+          liveChannel = null;
+          session = {
+            revision: id,
+            input: channel,
+            state: "error",
+            error: error.message,
+            title: channel,
+            source: null,
+            formats: [],
+            chat: session.chat,
+          };
+        }
+        return;
+      }
+      if (closed || signal.aborted || liveChannel !== channel) return;
+      const id = ++generation;
+      previousRegistry = registry;
+      registry = new MediaRegistry(prefix, { evictOldest: true });
+      const selected = chooseFormat(result.formats, options.quality ?? "best");
+      liveChannel = result.kind === "live" ? result.channel : null;
+      session = {
+        revision: id,
+        input: channel,
+        state: "ready",
+        error: null,
+        title:
+          result.kind === "hidden"
+            ? `${result.channel} · ${new Date(result.startedAt).toLocaleDateString("en-GB")}`
+            : result.kind === "live"
+              ? `${result.channel} · live`
+              : `Twitch VOD ${result.videoId}`,
+        source: result.kind,
+        formats: [
+          selected,
+          ...result.formats.filter((format) => format !== selected),
+        ].map((format) => ({
+          id: format.id,
+          url: registry.register(format.url, true),
+        })),
+        chat: {
+          kind: "unavailable",
+          message: "Live chat is not supported yet. Video still plays.",
+        },
+      };
+    })().catch(() => undefined);
+    liveRefreshTask = task;
+    try {
+      await task;
+    } finally {
+      if (liveRefreshTask === task) liveRefreshTask = null;
     }
   }
   const server = createServer((request, response) => {
@@ -351,7 +478,7 @@ export async function startWatchServer(options: ServerOptions) {
             ? options.channel
             : string(payload.channel).trim();
         if (!input || input.length > 2000) {
-          json(response, 400, { error: "Enter a Twitch VOD or tracker URL." });
+          json(response, 400, { error: liveMode ? "Enter a Twitch channel name or URL." : "Enter a Twitch VOD or tracker URL." });
           return;
         }
         void load(input, channel);
@@ -411,6 +538,14 @@ export async function startWatchServer(options: ServerOptions) {
         } finally {
           clearTimeout(connectTimer);
         }
+        if (liveMode && (upstream.status === 401 || upstream.status === 403)) {
+          await upstream.body?.cancel();
+          void refreshLive();
+          json(response, 502, {
+            error: "The live source expired and is being refreshed. Wait a moment or reconnect.",
+          });
+          return;
+        }
         if (!upstream.ok) {
           await upstream.body?.cancel();
           json(response, upstream.status, {
@@ -428,6 +563,14 @@ export async function startWatchServer(options: ServerOptions) {
             text = await readPlaylist(upstream);
           } finally {
             clearTimeout(playlistTimer);
+          }
+          if (filterLiveAds) {
+            try {
+              text = stripLiveAds(text).text;
+            } catch {
+              // Fail closed: serve the original playlist with ads rather than
+              // breaking playback because the filter rejected it.
+            }
           }
           response.writeHead(200, {
             "Content-Type": "application/vnd.apple.mpegurl",

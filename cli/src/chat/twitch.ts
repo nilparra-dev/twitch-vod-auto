@@ -67,6 +67,9 @@ export class TwitchChatClient implements ChatSource {
   async resolve(input: string, channelOption?: string): Promise<string> {
     const target = parseInput(input);
     if (target.kind === "public") return target.videoId;
+    if (target.kind === "live") {
+      throw new ChatError("LIVE_UNSUPPORTED", "Live chat archiving is not supported yet. Watch the live video first; its replay can be archived once Twitch publishes the VOD.");
+    }
     const channel = target.kind === "stream-id" ? channelOption : target.channel;
     if (!channel || !/^\w+$/.test(channel)) {
       throw new ChatError("CHANNEL_REQUIRED", "A stream ID requires --channel CHANNEL or a tracker URL.");

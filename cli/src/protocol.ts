@@ -92,7 +92,7 @@ export interface PlayerSession {
   state: "idle" | "resolving" | "ready" | "error";
   error: string | null;
   title: string;
-  source: "hidden" | "public" | null;
+  source: "hidden" | "public" | "live" | null;
   formats: { id: string; url: string }[];
   chat: ChatStatus;
 }
