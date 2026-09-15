@@ -9,6 +9,9 @@ export {
   ResolveError,
   VOD_DOMAINS,
 } from "./resolver.js";
+export { parseLiveChannel } from "./live/channel.js";
+export { resolveLiveM3U8 } from "./live/resolver.js";
+export type { LiveResolveResult } from "./live/resolver.js";
 export type {
   ParsedInput,
   PlaylistFormat,

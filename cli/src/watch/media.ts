@@ -11,7 +11,10 @@ export interface Resource {
 export class MediaRegistry {
   readonly resources = new Map<string, Resource>();
   private readonly salt = randomBytes(16).toString("hex");
-  constructor(readonly prefix: string) {}
+  constructor(
+    readonly prefix: string,
+    private readonly options: { evictOldest?: boolean } = {},
+  ) {}
   register(
     url: string,
     manifest = new URL(url).pathname.endsWith(".m3u8"),
@@ -21,8 +24,17 @@ export class MediaRegistry {
       .update(this.salt + url)
       .digest("hex")
       .slice(0, 32);
-    if (this.resources.size > 100_000 && !this.resources.has(id))
-      throw new Error("Playlist resource limit reached.");
+    // A multi-hour live keeps registering fresh segment URLs. In live mode the
+    // oldest entries are outside the DVR window, so evict them instead of
+    // failing; VOD playback keeps the strict limit to surface abuse.
+    if (this.resources.size > 100_000 && !this.resources.has(id)) {
+      if (this.options.evictOldest) {
+        const oldest = this.resources.keys().next().value;
+        if (oldest !== undefined) this.resources.delete(oldest);
+      } else {
+        throw new Error("Playlist resource limit reached.");
+      }
+    }
     this.resources.set(id, { url, manifest });
     return `${this.prefix}media/${id}`;
   }

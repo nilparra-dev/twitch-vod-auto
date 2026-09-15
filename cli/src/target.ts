@@ -244,6 +244,12 @@ export async function targetCommand(args: string[]): Promise<void> {
       writeResult(options, { kind: "public", videoId: parsed.videoId, target }, target);
       return;
     }
+    case "live": {
+      throw new ResolveError(
+        "Live channels have no VOD target. Use `twitch-m3u8 live <channel> --watch` to watch the broadcast.",
+        "LIVE_UNSUPPORTED",
+      );
+    }
     default: {
       const exhaustive: never = parsed;
       return exhaustive;

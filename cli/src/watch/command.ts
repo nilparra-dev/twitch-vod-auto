@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { DEFAULT_TIMESTAMP_WINDOW } from "../resolver.js";
+import { DEFAULT_TIMESTAMP_WINDOW, parseInput } from "../resolver.js";
 import { startWatchServer, type ServerOptions } from "./server.js";
 
 export async function watchCommand(args: string[]): Promise<void> {
@@ -61,6 +61,20 @@ be reconstructed, and chat availability is independent of video recovery.
       throw new Error(`Unknown watch option: ${arg}`);
     else if (!options.input) options.input = arg;
     else throw new Error(`Unexpected argument: ${arg}`);
+  }
+  if (options.input) {
+    // Live channels have their own server mode with ad filtering and token
+    // refresh. The VOD player would play them with ads and without refresh,
+    // so redirect instead of silently degrading.
+    let kind: string | null = null;
+    try {
+      kind = parseInput(options.input).kind;
+    } catch {
+      kind = null;
+    }
+    if (kind === "live") {
+      throw new Error("That looks like a live channel. Use `twitch-m3u8 live <channel> --watch` for live playback with ad filtering.");
+    }
   }
   const server = await startWatchServer(options);
   process.stdout.write(`${server.url}\n`);

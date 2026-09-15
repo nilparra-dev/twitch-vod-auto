@@ -2,7 +2,9 @@
 
 Resolve public and hidden Twitch VODs to playable M3U8 URLs, list a channel's
 recent streams (including hidden ones), archive chat replays, and stream
-recovered video with synchronized chat in a local browser player. Paste a VOD
+recovered video with synchronized chat in a local browser player. Live
+channels can be resolved too, and watched in the local player with
+server-stitched ads removed. Paste a VOD
 ID, a tracker URL, or a canonical `video:...` target. The resolver finds the
 available qualities and prints the URL without downloading the video.
 
@@ -158,6 +160,28 @@ npx twitch-vod-m3u8@beta target xqc STREAM_ID --timestamp 1788986481
 Without a stream ID it uses the channel's most recent stream. The result can be
 passed straight to the resolver, `watch`, or `--url`.
 
+## Watching live channels
+
+`live` resolves a channel that is broadcasting right now and either prints
+its M3U8 URL or opens the local player with server-stitched ads removed:
+
+```bash
+npx twitch-vod-m3u8@beta live xqc
+npx twitch-vod-m3u8@beta live https://www.twitch.tv/xqc --watch
+npx twitch-vod-m3u8@beta live xqc --watch --with-ads
+```
+
+The printed raw URL is Twitch's own stream and still contains ads. Only the
+local player (`--watch`) filters them: the bundled server drops ad-pod
+segments from the proxied playlists and repairs the sequence counters before
+they reach the browser, so playback continues without the pod. Segments that
+do not carry an explicit ad marker are always kept, so an unrecognized pod
+plays instead of stalling. When the playback token expires the server
+re-resolves in the background and the player picks up the fresh source; use
+Reconnect if it stalls. A channel that is offline reports `OFFLINE`. Live
+chat is not supported yet; once the broadcast ends, its replay can be
+archived with `chat` like any other VOD.
+
 ## Programmatic use
 
 The package can also be imported as an ES module:
@@ -172,7 +196,8 @@ console.log(selected.url);
 ```
 
 `parseInput`, `buildFullVodPath`, `parseMasterManifest`, `VOD_DOMAINS`,
-`ResolveError` and the result types are exported too. `resolveM3U8` accepts
+`ResolveError` and the result types are exported too. `resolveLiveM3U8` resolves
+a live channel to the same format shape. `resolveM3U8` accepts
 `{ channel, timeoutMs, timestampWindow, signal, fetch }` as an optional second
 argument. Hidden results include a `timestamp` report with the requested and
 actually used second, whether it was corrected, and which source provided it.
