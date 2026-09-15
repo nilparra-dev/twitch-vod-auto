@@ -14,6 +14,8 @@ export interface MediaPlaylist {
   initSegment: string | null;
   endList: boolean;
   totalDurationSeconds: number;
+  /** `#EXT-X-DISCONTINUITY` count, used to pick a download engine. */
+  discontinuities: number;
 }
 
 /**
@@ -46,6 +48,7 @@ export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist
   let initSegment: string | null = null;
   let endList = false;
   let totalDurationSeconds = 0;
+  let discontinuities = 0;
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -64,6 +67,10 @@ export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist
       endList = true;
       continue;
     }
+    if (line === "#EXT-X-DISCONTINUITY") {
+      discontinuities += 1;
+      continue;
+    }
     if (line.startsWith("#")) continue;
     if (pendingDuration === null) continue;
     segments.push({ uri: new URL(line, baseUrl).href, durationSeconds: pendingDuration });
@@ -71,5 +78,5 @@ export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist
     pendingDuration = null;
   }
 
-  return { segments, initSegment, endList, totalDurationSeconds };
+  return { segments, initSegment, endList, totalDurationSeconds, discontinuities };
 }

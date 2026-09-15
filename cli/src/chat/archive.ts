@@ -48,6 +48,13 @@ interface Checkpoint {
 const RECENT_ID_LIMIT = 5000;
 /** Bounds cursor-loop detection; older repeats surface as out-of-order data. */
 const RECENT_CURSOR_LIMIT = 128;
+/**
+ * The journal is fsynced per page and is the source of truth; the checkpoint
+ * only accelerates resume, so it is written at most this often. Recovery reads
+ * the pages committed after the checkpoint.
+ */
+const CHECKPOINT_PAGE_INTERVAL = 10;
+const CHECKPOINT_TIME_INTERVAL_MS = 5_000;
 
 interface ResumeState {
   pageCount: number;
@@ -420,7 +427,18 @@ export async function downloadChat(options: DownloadOptions): Promise<Manifest> 
     state =
       (checkpoint ? await resumeFromCheckpoint(checkpoint, journal, options.signal) : null) ??
       (await scanJournal(journal, options.signal));
-    await saveCheckpoint(checkpointPath, state, await fileSize(journal));
+    let journalBytes = await fileSize(journal);
+    await saveCheckpoint(checkpointPath, state, journalBytes);
+    let pagesSinceCheckpoint = 0;
+    let checkpointAt = Date.now();
+    const saveProgress = async (force = false): Promise<void> => {
+      if (!force && pagesSinceCheckpoint < CHECKPOINT_PAGE_INTERVAL && Date.now() - checkpointAt < CHECKPOINT_TIME_INTERVAL_MS) {
+        return;
+      }
+      await saveCheckpoint(checkpointPath, state, journalBytes);
+      pagesSinceCheckpoint = 0;
+      checkpointAt = Date.now();
+    };
     manifest.pageCount = state.pageCount;
     manifest.messageCount = state.messageCount;
     if (!state.complete) {
@@ -469,13 +487,16 @@ export async function downloadChat(options: DownloadOptions): Promise<Manifest> 
           state.messageCount += messages.length;
           manifest.pageCount = state.pageCount;
           manifest.messageCount = state.messageCount;
-          await saveCheckpoint(checkpointPath, state, (await file.stat()).size);
+          journalBytes = (await file.stat()).size;
+          pagesSinceCheckpoint += 1;
+          await saveProgress();
           options.onProgress?.({ messages: state.messageCount, pages: state.pageCount, offsetSeconds: state.lastOffset });
         }
       } finally {
         await file.close();
       }
     }
+    await saveProgress(true);
     manifest.status = state.messageCount > 0 ? "complete" : "empty";
     manifest.updatedAt = new Date().toISOString();
     await atomicJson(manifestPath, manifest);
@@ -489,6 +510,9 @@ export async function downloadChat(options: DownloadOptions): Promise<Manifest> 
       manifest.status = manifest.pageCount > 0 ? "partial" : code === "CHAT_UNAVAILABLE" ? "unavailable" : "failed";
       manifest.error = { code, message: error instanceof Error ? error.message : String(error) };
       manifest.updatedAt = new Date().toISOString();
+      // Pages already committed must describe the resume state even though the
+      // periodic checkpoint may not have run since the last page.
+      await saveCheckpoint(checkpointPath, state, await fileSize(journal)).catch(() => undefined);
       await atomicJson(manifestPath, manifest).catch(() => undefined);
     }
     throw error;

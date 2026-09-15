@@ -91,10 +91,19 @@ export async function readChunkWithIdleTimeout(
     clearTimeout(timer);
   }
 }
+function etagMatches(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  const normalize = (value: string) => value.trim().replace(/^W\//, "");
+  return header
+    .split(",")
+    .some((value) => value.trim() === "*" || normalize(value) === normalize(etag));
+}
+
 async function fileResponse(
   path: string,
   request: IncomingMessage,
   response: ServerResponse,
+  cache?: "revalidate",
 ): Promise<void> {
   const info = await stat(path).catch((error: unknown) => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT")
@@ -108,6 +117,22 @@ async function fileResponse(
   if (!info.isFile()) {
     response.writeHead(404).end();
     return;
+  }
+  // Player assets are content-addressed by the build and revalidated with an
+  // ETag, so a reload inside a session transfers headers instead of bodies.
+  // The capability path changes per session, which is why this is not
+  // immutable caching across sessions.
+  const etag =
+    cache === "revalidate"
+      ? `W/"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`
+      : null;
+  if (etag) {
+    response.setHeader("Cache-Control", "private, no-cache");
+    response.setHeader("ETag", etag);
+    if (etagMatches(request.headers["if-none-match"], etag)) {
+      response.writeHead(304).end();
+      return;
+    }
   }
   let range;
   try {
@@ -465,7 +490,7 @@ export async function startWatchServer(options: ServerOptions) {
         response.writeHead(404).end();
         return;
       }
-      await fileResponse(path, request, response);
+      await fileResponse(path, request, response, "revalidate");
     };
     void run().catch((error: unknown) => {
       if (response.headersSent) response.destroy();

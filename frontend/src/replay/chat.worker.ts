@@ -1,9 +1,15 @@
-import { indexArchive, readWindow, searchArchive, type ArchiveIndex } from "./archive";
+import { readWindow, searchArchive, type ArchiveIndex } from "./archive";
+import { createIndexedDbCache, loadArchive, type IndexCache } from "./index-cache";
 import type { WorkerRequest, WorkerResponse } from "./protocol";
+import { createRemoteFile } from "./remote-file";
 
 let archive: ArchiveIndex | null = null;
+let cache: IndexCache | null = null;
 let searchId = 0;
 const send = (message: WorkerResponse) => self.postMessage(message);
+
+const indexCache = (): IndexCache => (cache ??= createIndexedDbCache());
+
 self.onmessage = async ({ data }: MessageEvent<WorkerRequest>) => {
   try {
     switch (data.kind) {
@@ -11,32 +17,23 @@ self.onmessage = async ({ data }: MessageEvent<WorkerRequest>) => {
         const target = new URL(data.url, self.location.href);
         if (target.origin !== self.location.origin)
           throw new Error("Chat must be served by the local player.");
-        archive = await indexArchive(
-          {
-            size: data.size,
-            slice: (start = 0, end = data.size) => ({
-              arrayBuffer: async () => {
-                if (start === end) return new ArrayBuffer(0);
-                const response = await fetch(target, {
-                  headers: { Range: `bytes=${start}-${Math.min(end, data.size) - 1}` },
-                });
-                if (
-                  response.status !== 206 ||
-                  response.headers.get("content-range") !==
-                    `bytes ${start}-${Math.min(end, data.size) - 1}/${data.size}`
-                )
-                  throw new Error("The local chat file changed or is no longer available.");
-                return response.arrayBuffer();
-              },
-            }),
-          },
+        const file = createRemoteFile({ url: target, size: data.size });
+        archive = await loadArchive(
+          file,
+          `remote:${target.href}:${data.size}`,
           (percent) => send({ kind: "progress", percent }),
+          indexCache(),
         );
         send({ kind: "ready", info: archive.info });
         break;
       }
       case "load":
-        archive = await indexArchive(data.file, (percent) => send({ kind: "progress", percent }));
+        archive = await loadArchive(
+          data.file,
+          `local:${data.file.name}:${data.file.size}:${data.file.lastModified}`,
+          (percent) => send({ kind: "progress", percent }),
+          indexCache(),
+        );
         send({ kind: "ready", info: archive.info });
         break;
       case "window":

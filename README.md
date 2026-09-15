@@ -208,15 +208,42 @@ the same missing paths; transient CDN failures are never cached.
 npx twitch-vod-m3u8@beta download 2434567890
 npx twitch-vod-m3u8@beta download "video:xqc_51582913581_1721686515" -q 720p60 -o clip.ts
 npx twitch-vod-m3u8@beta download 51582913581 --channel xqc
+npx twitch-vod-m3u8@beta download 2434567890 --output-dir "D:\VODs"
 npx twitch-vod-m3u8@beta list xqc --download 1
 ```
 
 Segments are fetched in parallel and written in order, so an interrupted
 download keeps a `.part` file and resumes when you run the same command again.
-Output defaults to `downloads/<id>.ts`; existing files and partial downloads
-are never overwritten without `--force`. `-o file.mp4` or `--remux` converts to
-MP4 with ffmpeg (`-c copy`, no re-encode); without ffmpeg the `.ts` file plays
-in VLC, MPV and most editors. Every segment URL and redirect must stay on
+Some encoders leave frames with the MPEG-TS "no timestamp" sentinel, in the
+PES header (PTS/DTS) or in the PCR; the downloader rewrites both in place,
+because players such as VLC take the values literally and jump the media clock
+to ~26.5 hours.
+Output defaults to `downloads/<id>.ts` in the current directory; existing files
+and partial downloads are never overwritten without `--force`. `-o` sets an
+exact file path, while `--output-dir` sets only the folder and keeps the
+generated name (`<id>.mp4` with `--remux`); the two options cannot be combined.
+A file ending in `.mp4` or `--remux` converts to
+MP4 with ffmpeg (`-c copy`, no re-encode, `+faststart`), checks the result
+duration with ffprobe, and accepts `--ffmpeg-path <file>` or the
+`TWITCH_VOD_M3U8_FFMPEG` environment variable; without ffmpeg the `.ts` file
+plays in VLC, MPV and most editors. `--install-ffmpeg` downloads a pinned LGPL
+static build from BtbN into `~/.cache/twitch-vod-m3u8/ffmpeg/`, verifies its
+published SHA-256 and reuses it. macOS is not covered by the pinned matrix yet;
+use Homebrew there or `--ffmpeg-path`.
+`--engine auto` (default) keeps the requested container and only chooses how an
+MP4 is built: hybrid by default, ffmpeg for fragmented or discontinued
+playlists and when free disk space cannot hold the segment directory, and
+native when a partial download can resume or `--keep-ts` is used. The decision
+and its reason are printed to stderr and reported as `engineReason` in `--json`.
+`--engine ffmpeg` skips the concatenation: ffmpeg downloads the validated
+playlist directly and stream-copies it, which avoids the per-segment boundary
+artifacts of the native engine. It downloads sequentially (slower) and cannot
+resume.
+`--engine hybrid` downloads the segments in parallel into `<output>.segments`
+next to the output, then muxes them with ffmpeg. It keeps the native engine's
+speed and per-segment resume, drops the concatenation artifacts, and removes
+the segment directory only after publishing the final file; a failed run keeps
+it and the next run reuses it. Every segment URL and redirect must stay on
 Twitch's media domains, and an oversized segment aborts instead of filling the
 disk.
 
@@ -262,7 +289,10 @@ The JSON format is our versioned format, not a TwitchDownloader-compatible expor
 Downloads save committed pages in `downloads/chat.json.archive/pages.jsonl` and
 a bounded resume checkpoint in `checkpoint.json`. Repeat the same command and
 output path after a network failure or Ctrl+C to resume; the checkpoint lets a
-large archive continue without re-reading committed pages. Keep the `.archive`
+large archive continue without re-reading committed pages. The journal is
+fsynced per page, while the checkpoint is rewritten periodically (every ten
+pages or five seconds) and once more when the run stops; recovery reads the
+pages committed after the checkpoint. Keep the `.archive`
 directory until you have a finished JSON. A truncated final journal line is
 discarded on recovery; corrupt committed pages cause an error. Messages are
 streamed by page and only recent message IDs are kept for deduplication, so data
@@ -333,7 +363,10 @@ credentials.
 To build an installable package, run `npm pack`. Its `prepack` step builds the CLI
 and the standalone page. After installing that tarball, use `twitch-m3u8 watch`.
 The published package includes the web assets and third-party license notices;
-end users do not need the source checkout or frontend build tools.
+end users do not need the source checkout or frontend build tools. The player
+shell imports hls.js only when remote streaming starts, so local file playback
+does not download the library, and the bundled assets are revalidated with an
+ETag inside a session.
 
 Keyboard shortcuts work anywhere on the page: `K` play/pause, left and right
 arrows seek 10 seconds, `M` mutes, `F` toggles fullscreen and `Escape` exits
@@ -384,7 +417,10 @@ select Follow replay. Search scans the archive in order, with several range read
 in flight, and returns the first 100 matches. The current limits are 4 GB per
 file, two million messages and 1 MB per message or metadata block. Select the
 final `.json` export, not the internal `pages.jsonl` journal. A damaged or
-unsupported archive produces a visible error.
+unsupported archive produces a visible error. Remote chat is read in aligned
+4 MB blocks instead of one request per scan chunk, and the completed index is
+cached in the browser, keyed by file identity, so reopening the same archive
+does not rescan it.
 
 ## Development
 

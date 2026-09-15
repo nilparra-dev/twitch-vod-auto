@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-import { DownloadError, downloadPlaylist, fingerprintPlaylist } from "../../dist/download/fetcher.js";
+import { parseDownloadArgs, selectOutputPaths } from "../../dist/download/command.js";
+import { DownloadError, downloadPlaylist, downloadSegments, fingerprintPlaylist } from "../../dist/download/fetcher.js";
 import { parseMasterPlaylist, parseMediaPlaylist } from "../../dist/download/playlist.js";
 
 const temporaryDirectories = [];
@@ -56,6 +57,15 @@ describe("playlist parsing", () => {
       "https://cdn.example/vod/720p60/index-dvr.m3u8",
     ]);
     assert.equal(parseMasterPlaylist("#EXTM3U\n#EXTINF:10,\na.ts", "https://cdn.example/a.m3u8"), null);
+  });
+
+  it("counts discontinuities for engine selection", () => {
+    const playlist = parseMediaPlaylist(
+      "#EXTM3U\n#EXTINF:10,\na.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:10,\nb.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:10,\nc.ts\n#EXT-X-ENDLIST",
+      "https://d2nvs31859zcd8.cloudfront.net/vod/index.m3u8",
+    );
+    assert.equal(playlist.discontinuities, 2);
+    assert.equal(playlist.segments.length, 3);
   });
 });
 
@@ -162,7 +172,7 @@ a.m4s
     await writeFile(`${output}.part`, "AB");
     await writeFile(
       `${output}.part.json`,
-      JSON.stringify({ fingerprint: fingerprintPlaylist(playlist), segments: 2, bytes: 2 }),
+      JSON.stringify({ fingerprint: fingerprintPlaylist(playlist), segments: 2, bytes: 2, timestampRepair: 2 }),
     );
     const requested = [];
     const fakeFetch = async (url) => {
@@ -238,7 +248,7 @@ a.m4s
     }|${playlist.segments.at(-1).uri}`;
     await writeFile(
       `${output}.part.json`,
-      JSON.stringify({ fingerprint: legacyFingerprint, segments: 2, bytes: 2 }),
+      JSON.stringify({ fingerprint: legacyFingerprint, segments: 2, bytes: 2, timestampRepair: 2 }),
     );
     const requested = [];
     const fakeFetch = async (url) => {
@@ -268,11 +278,211 @@ a.m4s
     const directory = await workdir();
     const output = join(directory, "out.ts");
     await writeFile(`${output}.part`, "AB");
-    await writeFile(`${output}.part.json`, JSON.stringify({ fingerprint: "other", segments: 2, bytes: 2 }));
+    await writeFile(
+      `${output}.part.json`,
+      JSON.stringify({ fingerprint: "other", segments: 2, bytes: 2, timestampRepair: 2 }),
+    );
     const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
     await assert.rejects(
       downloadPlaylist({ playlist, output, fetch: async () => new Response("A", { status: 200 }) }),
       (error) => error instanceof DownloadError && error.code === "STATE_MISMATCH",
+    );
+  });
+
+  it("restarts a partial download written before timestamp repair", async () => {
+    const directory = await workdir();
+    const output = join(directory, "out.ts");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    await writeFile(`${output}.part`, "AB");
+    await writeFile(
+      `${output}.part.json`,
+      JSON.stringify({ fingerprint: fingerprintPlaylist(playlist), segments: 2, bytes: 2 }),
+    );
+    const requested = [];
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      requested.push(key);
+      if (key === "a.ts") return new Response("A", { status: 200 });
+      if (key === "b.ts") return new Response("B", { status: 200 });
+      return new Response("", { status: 404 });
+    };
+
+    const result = await downloadPlaylist({ playlist, output, fetch: fakeFetch, retryDelayMs: 1 });
+
+    assert.equal(result.resumedFrom, 0);
+    assert.deepEqual(requested.sort(), ["a.ts", "b.ts"]);
+    assert.equal(await readFile(output, "utf8"), "AB");
+  });
+});
+
+describe("segment directory downloader", () => {
+  it("writes one file per segment and a fingerprint", async () => {
+    const directory = join(await workdir(), "segments");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    const chunks = { "a.ts": "A", "b.ts": "BB" };
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      return key in chunks ? new Response(chunks[key], { status: 200 }) : new Response("", { status: 404 });
+    };
+
+    const result = await downloadSegments({ playlist, directory, fetch: fakeFetch, retryDelayMs: 1 });
+
+    assert.equal(result.segments, 2);
+    assert.equal(result.reused, 0);
+    assert.equal(result.bytes, 3);
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "A");
+    assert.equal(await readFile(join(directory, "1.ts"), "utf8"), "BB");
+    assert.equal(await exists(join(directory, "0.ts.part")), false);
+    assert.equal(await exists(join(directory, "fingerprint")), true);
+  });
+
+  it("reuses existing segment files on a second run", async () => {
+    const directory = join(await workdir(), "segments");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    const chunks = { "a.ts": "A", "b.ts": "B" };
+    let calls = 0;
+    const fakeFetch = async (url) => {
+      calls += 1;
+      const key = String(url).split("/").at(-1);
+      return key in chunks ? new Response(chunks[key], { status: 200 }) : new Response("", { status: 404 });
+    };
+
+    await downloadSegments({ playlist, directory, fetch: fakeFetch, retryDelayMs: 1 });
+    calls = 0;
+    const result = await downloadSegments({ playlist, directory, fetch: fakeFetch, retryDelayMs: 1 });
+
+    assert.equal(calls, 0);
+    assert.equal(result.reused, 2);
+  });
+
+  it("wipes the directory when the playlist changes", async () => {
+    const directory = join(await workdir(), "segments");
+    const first = playlistWith("#EXTINF:10,\na.ts");
+    const second = playlistWith("#EXTINF:10,\nc.ts");
+    const fakeFetch = async (url) => {
+      const key = String(url).split("/").at(-1);
+      return key === "c.ts" ? new Response("C", { status: 200 }) : new Response("A", { status: 200 });
+    };
+
+    await downloadSegments({ playlist: first, directory, fetch: fakeFetch, retryDelayMs: 1 });
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "A");
+    await downloadSegments({ playlist: second, directory, fetch: fakeFetch, retryDelayMs: 1 });
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "C");
+  });
+
+  it("keeps the downloaded segments after a failure so a run can resume", async () => {
+    const directory = join(await workdir(), "segments");
+    const playlist = playlistWith("#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts");
+    const failing = async (url) => {
+      const key = String(url).split("/").at(-1);
+      if (key === "a.ts") return new Response("A", { status: 200 });
+      return new Response("", { status: 503 });
+    };
+
+    await assert.rejects(
+      downloadSegments({ playlist, directory, fetch: failing, attempts: 1, concurrency: 1, retryDelayMs: 1 }),
+    );
+    assert.equal(await readFile(join(directory, "0.ts"), "utf8"), "A");
+
+    const working = async (url) => {
+      const key = String(url).split("/").at(-1);
+      return key === "b.ts" ? new Response("B", { status: 200 }) : new Response("", { status: 404 });
+    };
+    const result = await downloadSegments({ playlist, directory, fetch: working, retryDelayMs: 1 });
+    assert.equal(result.reused, 1);
+    assert.equal(await readFile(join(directory, "1.ts"), "utf8"), "B");
+  });
+});
+
+const publicResult = {
+  kind: "public",
+  source: "twitch",
+  videoId: "2434567890",
+  masterUrl: "https://d2nvs31859zcd8.cloudfront.net/vod/master.m3u8",
+  formats: [],
+};
+
+const hiddenResult = {
+  kind: "hidden",
+  source: "canonical",
+  channel: "xqc",
+  streamId: "51582913581",
+  startedAt: "2024-07-22T22:15:15Z",
+  canonicalTarget: "video:xqc_51582913581_1721686515",
+  formats: [],
+};
+
+describe("download command output selection", () => {
+  it("keeps the generated file name inside --output-dir", () => {
+    const directory = join(tmpdir(), "vods");
+    assert.deepEqual(selectOutputPaths(publicResult, { output: null, outputDir: directory, remux: false }), {
+      requested: join(directory, "2434567890.ts"),
+      tsPath: join(directory, "2434567890.ts"),
+    });
+  });
+
+  it("generates an .mp4 name with --remux and keeps the .ts intermediate", () => {
+    const directory = join(tmpdir(), "vods");
+    assert.deepEqual(selectOutputPaths(hiddenResult, { output: null, outputDir: directory, remux: true }), {
+      requested: join(directory, "xqc_51582913581_1721686515.mp4"),
+      tsPath: join(directory, "xqc_51582913581_1721686515.ts"),
+    });
+  });
+
+  it("prefers an explicit output path over the generated name", () => {
+    const output = join(tmpdir(), "clip.mp4");
+    assert.deepEqual(selectOutputPaths(publicResult, { output, outputDir: null, remux: true }), {
+      requested: output,
+      tsPath: join(tmpdir(), "clip.ts"),
+    });
+  });
+
+  it("defaults to downloads/ under the working directory", () => {
+    const { requested, tsPath } = selectOutputPaths(publicResult, { output: null, outputDir: null, remux: false });
+    assert.equal(requested, resolve(join("downloads", "2434567890.ts")));
+    assert.equal(tsPath, requested);
+  });
+});
+
+describe("download command arguments", () => {
+  it("parses --output-dir", () => {
+    const options = parseDownloadArgs(["2434567890", "--output-dir", "vods"]);
+    assert.equal(options.outputDir, "vods");
+    assert.equal(options.output, undefined);
+  });
+
+  it("parses --ffmpeg-path", () => {
+    const options = parseDownloadArgs(["2434567890", "--ffmpeg-path", "C:/tools/ffmpeg.exe"]);
+    assert.equal(options.ffmpegPath, "C:/tools/ffmpeg.exe");
+  });
+
+  it("parses --install-ffmpeg", () => {
+    const options = parseDownloadArgs(["2434567890", "--install-ffmpeg"]);
+    assert.equal(options.installFfmpeg, true);
+  });
+
+  it("parses --engine and rejects unknown values", () => {
+    assert.equal(parseDownloadArgs(["2434567890", "--engine", "ffmpeg"]).engine, "ffmpeg");
+    assert.equal(parseDownloadArgs(["2434567890", "--engine", "hybrid"]).engine, "hybrid");
+    assert.equal(parseDownloadArgs(["2434567890", "--engine", "auto"]).engine, "auto");
+    assert.equal(parseDownloadArgs(["2434567890"]).engine, "auto");
+    assert.throws(
+      () => parseDownloadArgs(["2434567890", "--engine", "wat"]),
+      (error) => error.code === "INVALID_ARGUMENT",
+    );
+  });
+
+  it("rejects --output combined with --output-dir", () => {
+    assert.throws(
+      () => parseDownloadArgs(["2434567890", "-o", "clip.ts", "--output-dir", "vods"]),
+      (error) => error.code === "INVALID_ARGUMENT" && /cannot be combined/.test(error.message),
+    );
+  });
+
+  it("requires a value for --output-dir", () => {
+    assert.throws(
+      () => parseDownloadArgs(["2434567890", "--output-dir"]),
+      (error) => error.code === "INVALID_ARGUMENT" && /--output-dir requires a value/.test(error.message),
     );
   });
 });
