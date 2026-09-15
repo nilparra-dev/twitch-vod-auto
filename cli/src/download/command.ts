@@ -240,6 +240,12 @@ function defaultFileName(result: ResolveResult, mp4: boolean): string {
     const started = Math.floor(Date.parse(result.startedAt) / 1000);
     return `${result.channel}_${result.streamId}_${started}${extension}`;
   }
+  if (result.kind === "live") {
+    throw new ResolveError(
+      "Downloading a live edge playlist is not supported. Use `twitch-m3u8 live <channel> --watch` to watch it, or wait for the VOD.",
+      "LIVE_UNSUPPORTED",
+    );
+  }
   return `${result.videoId}${extension}`;
 }
 
@@ -392,6 +398,12 @@ export async function downloadCommand(args: string[]): Promise<void> {
       signal: controller.signal,
       ...(options.channel ? { channel: options.channel } : {}),
     });
+    if (result.kind === "live") {
+      throw new ResolveError(
+        "Downloading a live edge playlist is not supported. Use `twitch-m3u8 live <channel> --watch` to watch it, or wait for the VOD.",
+        "LIVE_UNSUPPORTED",
+      );
+    }
     const format = chooseFormat(result.formats, options.quality);
 
     if (stderr.isTTY) {

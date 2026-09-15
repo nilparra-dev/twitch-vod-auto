@@ -164,6 +164,15 @@ export function parseInput(rawInput: string): ParsedInput {
   const twitchVideoId = twitchUrl?.groups?.id;
   if (twitchVideoId) return { kind: "public", videoId: twitchVideoId };
 
+  // Live parsing mirrors parseLiveChannel (cli/src/live/channel.ts) without a
+  // static import cycle: bare login, live:login, or a single-segment
+  // twitch.tv/<channel> URL with optional query/fragment. Keep both in sync.
+  const liveTarget = input.match(/^live:(?<channel>\w{1,25})$/i);
+  if (liveTarget?.groups?.channel) return { kind: "live", channel: liveTarget.groups.channel.toLowerCase() };
+
+  const liveUrl = input.match(/^https?:\/\/(?:www\.)?twitch\.tv\/(?<channel>\w{1,25})\/?(?:[?#].*)?$/i);
+  if (liveUrl?.groups?.channel) return { kind: "live", channel: liveUrl.groups.channel.toLowerCase() };
+
   if (/^\d+$/.test(input)) {
     return input.length > 10 ? { kind: "stream-id", streamId: input } : { kind: "public", videoId: input };
   }
@@ -597,6 +606,12 @@ export async function resolveM3U8(rawInput: string, options: ResolveOptions = {}
   switch (input.kind) {
     case "public":
       return resolvePublic(input.videoId, ctx);
+    case "live": {
+      // Dynamically imported so the live resolver can reuse this module
+      // without a static import cycle.
+      const { resolveLiveM3U8 } = await import("./live/resolver.js");
+      return resolveLiveM3U8(input.channel, options);
+    }
     case "hidden":
       return resolveHiddenTarget({
         channel: input.channel,

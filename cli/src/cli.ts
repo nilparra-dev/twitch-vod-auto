@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { stdin, stderr, stdout } from "node:process";
 
 import { chooseFormat, DEFAULT_TIMESTAMP_WINDOW, parseInput, ResolveError, resolveM3U8 } from "./resolver.js";
+import { copyToClipboard, openPlayer } from "./player-open.js";
 import { chatCommand } from "./chat/command.js";
 import { downloadCommand } from "./download/command.js";
 import { listCommand } from "./list.js";
+import { liveCommand } from "./live/command.js";
 import { targetCommand } from "./target.js";
 import { watchCommand } from "./watch/command.js";
 
@@ -45,6 +43,7 @@ Resolve public and hidden Twitch VODs to M3U8 URLs.
 
 Usage:
   twitch-m3u8 <URL|ID|video:...> [options]
+  twitch-m3u8 live <channel|URL> [--watch]
   twitch-m3u8 download <URL|ID|video:...> [-o file.ts]
   twitch-m3u8 target <channel> [stream-id]
   twitch-m3u8 list <channel> [--probe] [--target N | --download N | --url N | --watch N]
@@ -53,6 +52,7 @@ Usage:
 
 Examples:
   twitch-m3u8 2434567890
+  twitch-m3u8 live xqc --watch
   twitch-m3u8 51582913581 --channel xqc
   twitch-m3u8 "https://twitchtracker.com/xqc/streams/51582913581"
   twitch-m3u8 "video:xqc_51582913581_1721686515" --open vlc
@@ -157,67 +157,11 @@ async function askForMissingChannel(options: CliOptions): Promise<CliOptions> {
   return { ...options, channel };
 }
 
-function commandExists(command: string): boolean {
-  const lookup = process.platform === "win32" ? "where.exe" : "which";
-  return spawnSync(lookup, [command], { stdio: "ignore" }).status === 0;
-}
-
-function openPlayer(url: string, requested?: string): Promise<void> {
-  let command: string | undefined;
-  let args = [url];
-
-  if (process.platform === "darwin") {
-    const app = requested === "mpv" ? "mpv" : "VLC";
-    command = "open";
-    args = ["-a", app, url];
-  } else if (process.platform === "win32") {
-    const candidates = requested
-      ? [requested]
-      : [
-          "vlc",
-          join(process.env.ProgramFiles ?? "C:\\Program Files", "VideoLAN", "VLC", "vlc.exe"),
-          join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Programs", "VideoLAN", "VLC", "vlc.exe"),
-          "mpv",
-        ];
-    command = candidates.find((candidate) => existsSync(candidate) || commandExists(candidate));
-  } else {
-    const candidates = requested ? [requested] : ["vlc", "mpv"];
-    command = candidates.find(commandExists);
-  }
-
-  if (!command) throw new ResolveError("VLC or MPV was not found. Install a player or copy the URL with --copy.");
-  const playerCommand = command;
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(playerCommand, args, { detached: true, stdio: "ignore" });
-    // A missing or unexecutable player fails asynchronously; surface it instead
-    // of crashing with an unhandled "error" event.
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
-}
-
-function copyToClipboard(value: string): void {
-  const commands: ReadonlyArray<readonly [string, string[]]> =
-    process.platform === "win32"
-      ? [["clip", []]]
-      : process.platform === "darwin"
-        ? [["pbcopy", []]]
-        : [
-            ["wl-copy", []],
-            ["xclip", ["-selection", "clipboard"]],
-            ["xsel", ["--clipboard", "--input"]],
-          ];
-  for (const [command, args] of commands) {
-    const result = spawnSync(command, args, { input: value, encoding: "utf8" });
-    if (result.status === 0) return;
-  }
-  throw new ResolveError("The clipboard is not available on this system.");
-}
-
 async function main(): Promise<void> {
+  if (process.argv[2] === "live") {
+    await liveCommand(process.argv.slice(3));
+    return;
+  }
   if (process.argv[2] === "watch") {
     await watchCommand(process.argv.slice(3));
     return;
@@ -246,6 +190,11 @@ async function main(): Promise<void> {
     timestampWindow: options.timestampWindow,
     ...(options.channel ? { channel: options.channel } : {}),
   });
+  if (result.kind === "live" && stderr.isTTY) {
+    // The generic resolver accepts live: targets and channel URLs for
+    // scripting, but the raw URL still carries server-stitched ads.
+    stderr.write("Note: this is a live edge URL and still contains ads. Use `live <channel> --watch` for the ad-filtered player.\n");
+  }
   const selected = chooseFormat(result.formats, options.quality);
 
   if (options.json) {

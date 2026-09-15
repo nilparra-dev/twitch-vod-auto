@@ -39,7 +39,7 @@ function parseSession(value: unknown): PlayerSession {
     data.state !== "error"
   )
     throw new Error("Invalid player state.");
-  if (data.source !== null && data.source !== "public" && data.source !== "hidden")
+  if (data.source !== null && data.source !== "public" && data.source !== "hidden" && data.source !== "live")
     throw new Error("Invalid video source.");
   return {
     revision: number(data.revision),

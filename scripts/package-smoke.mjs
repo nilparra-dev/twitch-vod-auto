@@ -113,7 +113,7 @@ async function main() {
       throw new Error(`--version printed "${printed}" instead of "${version}".`);
     }
     const help = run(process.execPath, [cli, "--help"], { cwd: consumer });
-    for (const command of ["chat", "watch", "list", "target", "download"]) {
+    for (const command of ["chat", "watch", "list", "target", "download", "live"]) {
       if (!help.includes(command)) throw new Error(`--help does not list the "${command}" command.`);
     }
     run(process.execPath, [cli, "chat", "--help"], { cwd: consumer });
@@ -121,12 +121,13 @@ async function main() {
     run(process.execPath, [cli, "list", "--help"], { cwd: consumer });
     run(process.execPath, [cli, "target", "--help"], { cwd: consumer });
     run(process.execPath, [cli, "download", "--help"], { cwd: consumer });
+    run(process.execPath, [cli, "live", "--help"], { cwd: consumer });
 
     const apiCheck = join(consumer, "check-api.mjs");
     await writeFile(
       apiCheck,
-      `import { ResolveError, chooseFormat, parseInput, resolveM3U8 } from "twitch-vod-m3u8";
-if (typeof resolveM3U8 !== "function" || typeof parseInput !== "function" || typeof chooseFormat !== "function" || typeof ResolveError !== "function") {
+      `import { ResolveError, chooseFormat, parseInput, resolveLiveM3U8, resolveM3U8 } from "twitch-vod-m3u8";
+if (typeof resolveM3U8 !== "function" || typeof resolveLiveM3U8 !== "function" || typeof parseInput !== "function" || typeof chooseFormat !== "function" || typeof ResolveError !== "function") {
   throw new Error("Public API exports are missing.");
 }
 const target = parseInput("https://www.twitch.tv/videos/2434567890");
@@ -148,7 +149,7 @@ if (target.kind !== "public" || target.videoId !== "2434567890") {
 try {
   const tarball = await main();
   console.log(
-    `Package smoke test passed: ${tarball} (CLI, list/chat/watch/download help, player assets and public API).`,
+    `Package smoke test passed: ${tarball} (CLI, list/chat/watch/download/live help, player assets and public API).`,
   );
 } catch (error) {
   console.error(`Package smoke test failed: ${error instanceof Error ? error.message : String(error)}`);
